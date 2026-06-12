@@ -66,19 +66,19 @@ def save_squads(squads):
         json.dump(squads, f, ensure_ascii=False, indent=2)
 
 # ========== ГЛАВНОЕ МЕНЮ ==========
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id=None):
-    uid = user_id or str(update.effective_user.id)
+async def show_main_menu(update_obj, context: ContextTypes.DEFAULT_TYPE, user_id: str):
+    """Показывает главное меню"""
     users = load_users()
     
-    if uid not in users:
+    if user_id not in users:
         msg = "⚠️ *Ты ещё не создал героя!*\n\nНапиши /start чтобы начать игру"
-        if update.callback_query:
-            await update.callback_query.edit_message_text(msg, parse_mode="Markdown")
+        if hasattr(update_obj, 'callback_query'):
+            await update_obj.callback_query.edit_message_text(msg, parse_mode="Markdown")
         else:
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await update_obj.message.reply_text(msg, parse_mode="Markdown")
         return
     
-    user = users[uid]
+    user = users[user_id]
     cls = CLASSES[user['class']]
     
     kb = [
@@ -90,10 +90,122 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id=
     
     text = f"{cls['emoji']} *{user['name']}* · Уровень {user['level']} · 🔥{user['streak']}\n\n🎮 *Главное меню:*"
     
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    if hasattr(update_obj, 'callback_query'):
+        await update_obj.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        await update_obj.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
+async def show_profile(query, user_id: str, users: dict):
+    """Показывает профиль героя"""
+    user = users.get(user_id)
+    if not user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    cls = CLASSES[user['class']]
+    attrs_text = "\n".join([f"{ATTRS[k]['emoji']} {ATTRS[k]['name']}: {v}" for k, v in user['attrs'].items()])
+    
+    xp_needed = user['level'] * 100
+    progress = int((user['xp'] / xp_needed) * 10) if xp_needed > 0 else 0
+    bar = "█" * progress + "░" * (10 - progress)
+    
+    text = (
+        f"{cls['emoji']} *{user['name']}* — {cls['name']}\n\n"
+        f"⭐ *Уровень:* {user['level']}\n"
+        f"📊 *Опыт:* {user['xp']}/{xp_needed}\n"
+        f"`{bar}`\n"
+        f"🔥 *Стрик:* {user['streak']} дней\n\n"
+        f"*📈 Атрибуты:*\n{attrs_text}"
+    )
+    
+    kb = [[InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
+async def show_tasks(query, user_id: str, users: dict):
+    """Показывает список заданий"""
+    user = users.get(user_id)
+    if not user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    tasks = user.get('tasks', [])
+    today = str(date.today())
+    
+    if not tasks:
+        kb = [
+            [InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]
+        await query.edit_message_text(
+            "📋 *У тебя пока нет заданий*\n\nДобавь своё первое задание!",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+    
+    kb = []
+    for task in tasks:
+        is_done = task.get('done_date') == today
+        status = "✅" if is_done else "◻️"
+        attr_emoji = ATTRS.get(task['attr'], {'emoji': '📌'})['emoji']
+        kb.append([InlineKeyboardButton(f"{status} {task['name']} {attr_emoji}", callback_data=f"done_{task['id']}")])
+    
+    kb.append([InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")])
+    kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
+    
+    done_count = len([t for t in tasks if t.get('done_date') == today])
+    
+    await query.edit_message_text(
+        f"📋 *Твои задания*\n\n"
+        f"✅ Выполнено сегодня: {done_count}/{len(tasks)}\n\n"
+        f"👇 Нажми на задание, чтобы отметить его выполненным:",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
+
+async def show_squad(query, context, user_id: str, users: dict):
+    """Показывает информацию об отряде"""
+    user = users.get(user_id)
+    if not user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    squad_id = user.get('squad_id')
+    if not squad_id:
+        kb = [
+            [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]
+        await query.edit_message_text(
+            "🏰 *У тебя пока нет отряда*\n\nСоздай свой отряд!",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+    
+    squads = load_squads()
+    squad = squads.get(squad_id)
+    if not squad:
+        await query.edit_message_text("❌ Отряд не найден")
+        return
+    
+    members_text = ""
+    for mid in squad['members']:
+        m = users.get(mid)
+        if m:
+            members_text += f"{CLASSES[m['class']]['emoji']} *{m['name']}* — {m['level']} ур.\n"
+    
+    bot_info = await context.bot.get_me()
+    invite_link = f"https://t.me/{bot_info.username}?start=squad_{squad_id}"
+    
+    kb = [[InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]]
+    
+    await query.edit_message_text(
+        f"🏰 *{squad['name']}*\n\n*👨‍👦 Участники:*\n{members_text}\n\n"
+        f"🔗 *Ссылка для приглашения:*\n`{invite_link}`",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
 
 # ========== КОМАНДЫ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -102,7 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Если пользователь уже есть - показываем меню
     if uid in users:
-        await main_menu(update, context)
+        await show_main_menu(update, context, uid)
         return
     
     # Нет пользователя - начинаем регистрацию
@@ -118,7 +230,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await main_menu(update, context)
+    uid = str(update.effective_user.id)
+    await show_main_menu(update, context, uid)
 
 # ========== ОБРАБОТКА ТЕКСТА ==========
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,7 +296,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 Код отряда: `{squad_id}`\n\n"
             f"🔗 *Отправь эту ссылку сыну:*\n{invite_link}\n\n"
             f"👇 Нажми на кнопку, чтобы перейти в меню",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Перейти в меню", callback_data="menu")]]),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Перейти в меню", callback_data="back_to_menu")]]),
             parse_mode="Markdown"
         )
         
@@ -252,6 +365,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # ===== КНОПКА НАЗАД В МЕНЮ =====
+    if data == 'back_to_menu':
+        await show_main_menu(query, context, uid)
+        return
+    
     # ===== ВЫБОР АТРИБУТА ДЛЯ ЗАДАНИЯ =====
     if data.startswith('task_attr_'):
         attr_key = data.replace('task_attr_', '')
@@ -277,9 +395,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_attr'] = False
         context.user_data['temp_task_name'] = None
         
-        await query.edit_message_text(f"✅ *Задание «{task_name}» добавлено!*", parse_mode="Markdown")
-        
-        # Показываем задания
+        # Показываем обновлённые задания
         await show_tasks(query, uid, users)
         return
     
@@ -309,10 +425,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user['streak'] += 1
         user['last_active'] = today
         
-        # Проверка уровня (100 опыта на уровень)
+        # Проверка уровня
         level_up = False
-        if user['xp'] >= user['level'] * 100:
+        xp_needed = user['level'] * 100
+        if user['xp'] >= xp_needed:
             user['level'] += 1
+            user['xp'] -= xp_needed
             level_up = True
         
         save_users(users)
@@ -330,29 +448,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== ПРОФИЛЬ =====
     if data == 'profile':
-        user = users.get(uid)
-        if not user:
-            await query.edit_message_text("❌ Сначала создай героя: /start")
-            return
-        
-        cls = CLASSES[user['class']]
-        attrs_text = "\n".join([f"{ATTRS[k]['emoji']} {ATTRS[k]['name']}: {v}" for k, v in user['attrs'].items()])
-        
-        xp_needed = user['level'] * 100
-        progress = int((user['xp'] / xp_needed) * 10) if xp_needed > 0 else 0
-        bar = "█" * progress + "░" * (10 - progress)
-        
-        text = (
-            f"{cls['emoji']} *{user['name']}* — {cls['name']}\n\n"
-            f"⭐ *Уровень:* {user['level']}\n"
-            f"📊 *Опыт:* {user['xp']}/{xp_needed}\n"
-            f"`{bar}`\n"
-            f"🔥 *Стрик:* {user['streak']} дней\n\n"
-            f"*📈 Атрибуты:*\n{attrs_text}"
-        )
-        
-        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        await show_profile(query, uid, users)
         return
     
     # ===== ПОКАЗАТЬ ЗАДАНИЯ =====
@@ -368,45 +464,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== ПОКАЗАТЬ ОТРЯД =====
     if data == 'squad':
-        user = users.get(uid)
-        if not user:
-            await query.edit_message_text("❌ Сначала создай героя: /start")
-            return
-        
-        squad_id = user.get('squad_id')
-        if not squad_id:
-            kb = [[InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")],
-                  [InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
-            await query.edit_message_text(
-                "🏰 *У тебя пока нет отряда*\n\nСоздай свой отряд!",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="Markdown"
-            )
-            return
-        
-        squads = load_squads()
-        squad = squads.get(squad_id)
-        if not squad:
-            await query.edit_message_text("❌ Отряд не найден")
-            return
-        
-        members_text = ""
-        for mid in squad['members']:
-            m = users.get(mid)
-            if m:
-                members_text += f"{CLASSES[m['class']]['emoji']} *{m['name']}* — {m['level']} ур.\n"
-        
-        bot_info = await context.bot.get_me()
-        invite_link = f"https://t.me/{bot_info.username}?start=squad_{squad_id}"
-        
-        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
-        
-        await query.edit_message_text(
-            f"🏰 *{squad['name']}*\n\n*👨‍👦 Участники:*\n{members_text}\n\n"
-            f"🔗 *Ссылка для приглашения:*\n`{invite_link}`",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
-        )
+        await show_squad(query, context, uid, users)
         return
     
     # ===== СОЗДАТЬ ОТРЯД =====
@@ -419,49 +477,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
-    
-    # ===== ГЛАВНОЕ МЕНЮ =====
-    if data == 'menu':
-        await main_menu(query, context, uid)
-
-async def show_tasks(query, uid, users):
-    user = users.get(uid)
-    if not user:
-        await query.edit_message_text("❌ Сначала создай героя: /start")
-        return
-    
-    tasks = user.get('tasks', [])
-    today = str(date.today())
-    
-    if not tasks:
-        kb = [[InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")],
-              [InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
-        await query.edit_message_text(
-            "📋 *У тебя пока нет заданий*\n\nДобавь своё первое задание!",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
-        )
-        return
-    
-    kb = []
-    for task in tasks:
-        is_done = task.get('done_date') == today
-        status = "✅" if is_done else "◻️"
-        attr_emoji = ATTRS.get(task['attr'], {'emoji': '📌'})['emoji']
-        kb.append([InlineKeyboardButton(f"{status} {task['name']} {attr_emoji}", callback_data=f"done_{task['id']}")])
-    
-    kb.append([InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")])
-    kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
-    
-    done_count = len([t for t in tasks if t.get('done_date') == today])
-    
-    await query.edit_message_text(
-        f"📋 *Твои задания*\n\n"
-        f"✅ Выполнено сегодня: {done_count}/{len(tasks)}\n\n"
-        f"👇 Нажми на задание, чтобы отметить его выполненным:",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown"
-    )
 
 # ========== УСТАНОВКА КОМАНД В ИНТЕРФЕЙСЕ ==========
 async def set_bot_commands(app):
@@ -483,7 +498,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     print("✅ Бот Vysotix успешно запущен!")
-    print("📌 Команды /start и /menu отображаются в интерфейсе Telegram")
     app.run_polling()
 
 if __name__ == "__main__":
