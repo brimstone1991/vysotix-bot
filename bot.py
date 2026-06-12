@@ -1,23 +1,28 @@
 import os
 import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
+from flask import Flask
+from threading import Thread
 
+# Настройка логов
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Токен из переменных окружения Railway
 TOKEN = os.environ.get("BOT_TOKEN", "")
 DATA_FILE = "data/users.json"
 
-# Conversation states
+# Состояния для разговоров
 CHOOSING_NAME, CHOOSING_CLASS, CREATING_SQUAD, JOINING_SQUAD = range(4)
 ADDING_TASK_NAME, ADDING_TASK_ATTR = range(10, 12)
 
+# Данные о классах
 CLASSES = {
     "warrior": {"name": "Воин", "emoji": "⚔️", "color": "purple", "bonus": "Сила"},
     "archer":  {"name": "Лучник", "emoji": "🏹", "color": "amber",  "bonus": "Ловкость"},
@@ -25,6 +30,7 @@ CLASSES = {
     "rogue":   {"name": "Разбойник", "emoji": "🗡️", "color": "green", "bonus": "Воля"},
 }
 
+# Данные об атрибутах
 ATTRS = {
     "str": {"name": "Сила",       "emoji": "💪", "hint": "тренировки, спорт"},
     "int": {"name": "Интеллект",  "emoji": "📚", "hint": "чтение, учёба"},
@@ -33,8 +39,10 @@ ATTRS = {
     "wil": {"name": "Воля",       "emoji": "🔥", "hint": "сложные и дискомфортные задачи"},
 }
 
+# Опыт для уровней
 XP_PER_LEVEL = [0, 100, 200, 350, 500, 700, 950, 1250, 1600, 2000]
 
+# Снаряжение по уровням
 GEAR_BY_LEVEL = {
     1: [],
     2: ["Начальное оружие"],
@@ -45,23 +53,20 @@ GEAR_BY_LEVEL = {
     10: ["Легендарный облик"],
 }
 
-
+# ========== РАБОТА С ДАННЫМИ ==========
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {"users": {}, "squads": {}}
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def save_data(data):
     os.makedirs("data", exist_ok=True)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-
 def get_user(data, uid):
     return data["users"].get(str(uid))
-
 
 def new_user(name, cls_key):
     return {
@@ -78,12 +83,10 @@ def new_user(name, cls_key):
         "gear": [],
     }
 
-
 def xp_for_level(lvl):
     if lvl - 1 < len(XP_PER_LEVEL):
         return XP_PER_LEVEL[lvl - 1]
     return XP_PER_LEVEL[-1] + (lvl - len(XP_PER_LEVEL)) * 500
-
 
 def add_xp(user, amount):
     user["xp"] += amount
@@ -96,13 +99,12 @@ def add_xp(user, amount):
         user["gear"].extend(new_gear)
     return leveled
 
-
 def char_card(user):
     cls = CLASSES[user["class"]]
     lvl = user["level"]
     xp = user["xp"]
     xp_need = xp_for_level(lvl + 1)
-    bar_filled = int((xp / xp_need) * 10)
+    bar_filled = int((xp / xp_need) * 10) if xp_need > 0 else 0
     bar = "█" * bar_filled + "░" * (10 - bar_filled)
 
     attrs_lines = ""
@@ -124,7 +126,7 @@ def char_card(user):
         f"📋 Выполнено заданий: {user['tasks_done']}"
     )
 
-
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     uid = str(update.effective_user.id)
@@ -145,7 +147,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSING_NAME
 
-
 async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
     if len(name) < 2 or len(name) > 20:
@@ -163,7 +164,6 @@ async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return CHOOSING_CLASS
-
 
 async def got_class(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -190,7 +190,6 @@ async def got_class(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSING_CLASS
 
-
 async def squad_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -199,7 +198,6 @@ async def squad_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return CREATING_SQUAD
-
 
 async def got_squad_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     squad_name = update.message.text.strip()
@@ -222,19 +220,17 @@ async def got_squad_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🏰 Отряд *{squad_name}* создан!\n\n"
         f"Код отряда: `{squad_id}`\n\n"
-        f"Отправь сыну эту ссылку чтобы он вступил:\n{invite_link}\n\n"
+        f"Отправь ссылку чтобы вступить:\n{invite_link}\n\n"
         "Используй /menu для управления.",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
-
 
 async def squad_join_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("🔗 Введи код отряда (6 символов):")
     return JOINING_SQUAD
-
 
 async def got_squad_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     code = update.message.text.strip().upper()
@@ -257,7 +253,6 @@ async def got_squad_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return ConversationHandler.END
-
 
 async def handle_start_with_args(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
@@ -285,7 +280,6 @@ async def handle_start_with_args(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     return await start(update, ctx)
 
-
 async def menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     uid = str(update.effective_user.id)
@@ -308,7 +302,6 @@ async def menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-
 async def show_char(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -324,7 +317,6 @@ async def show_char(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown"
     )
-
 
 async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -362,7 +354,6 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = f"📋 *Задания на сегодня*\n\nВыполнено: {len(done_today)}/{len(tasks)}"
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-
 async def do_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -390,8 +381,7 @@ async def do_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user["tasks_done"] += 1
 
     last = user.get("last_active", "")
-    from datetime import date as d, timedelta
-    yesterday = str(d.today() - timedelta(days=1))
+    yesterday = str(date.today() - timedelta(days=1))
     if last == yesterday:
         user["streak"] = user.get("streak", 0) + 1
     elif last != today:
@@ -412,13 +402,11 @@ async def do_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("◀️ К заданиям", callback_data="show_tasks")]]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-
 async def add_task_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("➕ *Новое задание*\n\nВведи название задания:", parse_mode="Markdown")
     return ADDING_TASK_NAME
-
 
 async def got_task_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["new_task_name"] = update.message.text.strip()
@@ -429,7 +417,6 @@ async def got_task_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
     return ADDING_TASK_ATTR
-
 
 async def got_task_attr(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -461,7 +448,6 @@ async def got_task_attr(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return ConversationHandler.END
-
 
 async def show_squad(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -502,7 +488,6 @@ async def show_squad(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-
 async def back_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -522,10 +507,25 @@ async def back_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ========== ВЕБ-СЕРВЕР ДЛЯ RAILWAY ==========
+flask_app = Flask('')
 
+@flask_app.route('/')
+def home():
+    return "🤖 Vysotix Bot is running on Railway!"
+
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    server = Thread(target=run_flask)
+    server.start()
+
+# ========== ЗАПУСК БОТА ==========
 def main():
     app = Application.builder().token(TOKEN).build()
 
+    # Основной разговор (регистрация)
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", handle_start_with_args)],
         states={
@@ -541,6 +541,7 @@ def main():
         fallbacks=[CommandHandler("start", handle_start_with_args)],
     )
 
+    # Разговор для добавления задания
     add_task_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_task_start, pattern="^add_task$")],
         states={
@@ -550,6 +551,7 @@ def main():
         fallbacks=[],
     )
 
+    # Регистрируем обработчики
     app.add_handler(conv)
     app.add_handler(add_task_conv)
     app.add_handler(CommandHandler("menu", menu))
@@ -561,9 +563,9 @@ def main():
     app.add_handler(CallbackQueryHandler(squad_create, pattern="^squad_create$"))
     app.add_handler(CallbackQueryHandler(squad_join_prompt, pattern="^squad_join$"))
 
-    print("Bot started...")
+    print("✅ Vysotix Bot started on Railway!")
     app.run_polling()
 
-
 if __name__ == "__main__":
-    main()
+    keep_alive()  # Запускаем веб-сервер для Railway
+    main()        # Запускаем бота
