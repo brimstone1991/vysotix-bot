@@ -53,52 +53,18 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-
-async def show_tasks_list(query, uid, users):
-    """Показывает список заданий"""
-    user = users.get(uid)
-    if not user:
-        await query.edit_message_text("❌ Ошибка")
-        return
-    
-    tasks = user.get('tasks', [])
-    
-    if not tasks:
-        kb = [[InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")],
-              [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]]
-        await query.edit_message_text(
-            "📋 *У тебя пока нет заданий*\n\nДобавь первое задание!",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
-        )
-        return
-    
-    kb = []
-    for task in tasks:
-        status = "✅" if task.get('done') else "◻️"
-        attr_emoji = ATTRS.get(task['attr'], "📌")
-        kb.append([InlineKeyboardButton(f"{status} {task['name']} {attr_emoji}", callback_data=f"done_{task['id']}")])
-    
-    kb.append([InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")])
-    kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
-    
-    done_count = len([t for t in tasks if t.get('done')])
-    
-    await query.edit_message_text(
-        f"📋 *Твои задания*\n\n✅ Выполнено: {done_count}/{len(tasks)}\n\n👇 Нажми на задание, чтобы отметить:",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown"
-    )
-
-async def show_main_menu(update_obj, uid, users):
+# ========== ГЛАВНОЕ МЕНЮ ==========
+async def show_main_menu(update_obj, uid):
     """Показывает главное меню"""
+    users = load_data()
     user = users.get(uid)
+    
     if not user:
+        msg = "Сначала создай героя: /start"
         if hasattr(update_obj, 'callback_query'):
-            await update_obj.callback_query.edit_message_text("Ошибка")
+            await update_obj.callback_query.edit_message_text(msg)
         else:
-            await update_obj.message.reply_text("Ошибка")
+            await update_obj.message.reply_text(msg)
         return
     
     kb = [
@@ -111,9 +77,17 @@ async def show_main_menu(update_obj, uid, users):
     text = f"🎮 *Главное меню*\n\n{user['name']} · Уровень {user['level']}"
     
     if hasattr(update_obj, 'callback_query'):
-        await update_obj.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        await update_obj.callback_query.edit_message_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(kb), 
+            parse_mode="Markdown"
+        )
     else:
-        await update_obj.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        await update_obj.message.reply_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(kb), 
+            parse_mode="Markdown"
+        )
 
 # ========== КОМАНДЫ ==========
 
@@ -122,7 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     
     if uid in data:
-        await show_main_menu(update, uid, data)
+        await show_main_menu(update, uid)
         return
     
     context.user_data['step'] = 'name'
@@ -133,13 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
-    data = load_data()
-    
-    if uid not in data:
-        await update.message.reply_text("Сначала создай героя: /start")
-        return
-    
-    await show_main_menu(update, uid, data)
+    await show_main_menu(update, uid)
 
 # ========== ОБРАБОТКА ТЕКСТА ==========
 
@@ -209,14 +177,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 Код: `{squad_id}`\n"
             f"🔗 Ссылка: {link}\n\n"
             f"Отправь ссылку сыну!\n\n"
-            f"Используй /menu",
+            f"👇 Нажми на кнопку, чтобы перейти в меню",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Перейти в меню", callback_data="menu")]]),
             parse_mode="Markdown"
         )
         
         context.user_data['step'] = None
         return
     
-    # Добавление задания - ПОЛУЧАЕМ НАЗВАНИЕ
+    # Добавление задания - получаем название
     if context.user_data.get('awaiting_task_name'):
         task_name = text
         if len(task_name) < 2:
@@ -236,6 +205,48 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
+
+# ========== ПОКАЗ ЗАДАНИЙ ==========
+async def show_tasks(query, uid):
+    """Показывает список заданий"""
+    users = load_data()
+    user = users.get(uid)
+    
+    if not user:
+        await query.edit_message_text("❌ Ошибка")
+        return
+    
+    tasks = user.get('tasks', [])
+    
+    if not tasks:
+        kb = [
+            [InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="menu")]
+        ]
+        await query.edit_message_text(
+            "📋 *У тебя пока нет заданий*\n\nДобавь первое задание!",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+    
+    kb = []
+    for task in tasks:
+        status = "✅" if task.get('done') else "◻️"
+        attr_emoji = list(ATTRS.keys())[list(ATTRS.values()).index(ATTRS[task['attr']])] if task['attr'] in ATTRS else "📌"
+        attr_display = ATTRS.get(task['attr'], "📌")
+        kb.append([InlineKeyboardButton(f"{status} {task['name']} {attr_display}", callback_data=f"done_{task['id']}")])
+    
+    kb.append([InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")])
+    kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="menu")])
+    
+    done_count = len([t for t in tasks if t.get('done')])
+    
+    await query.edit_message_text(
+        f"📋 *Твои задания*\n\n✅ Выполнено: {done_count}/{len(tasks)}\n\n👇 Нажми на задание:",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
 
 # ========== ОБРАБОТКА КНОПОК ==========
 
@@ -273,7 +284,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ===== ДОБАВИТЬ ЗАДАНИЕ (кнопка) =====
+    # ===== МЕНЮ (возврат в главное меню) =====
+    if data == 'menu':
+        await show_main_menu(query, uid)
+        return
+    
+    # ===== ДОБАВИТЬ ЗАДАНИЕ =====
     if data == 'add_task':
         context.user_data['awaiting_task_name'] = True
         await query.edit_message_text(
@@ -289,7 +305,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         user = users.get(uid)
         if not user:
-            await query.edit_message_text("❌ Ошибка: пользователь не найден")
+            await query.edit_message_text("❌ Ошибка")
             return
         
         # Создаём задание
@@ -307,11 +323,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user['tasks'].append(new_task)
         save_data(users)
         
-        # Очищаем временные данные
         context.user_data['temp_task_name'] = None
         
-        # Показываем обновлённый список заданий
-        await show_tasks_list(query, uid, users)
+        # Показываем список заданий
+        await show_tasks(query, uid)
         return
     
     # ===== ПОКАЗАТЬ ПРОФИЛЬ =====
@@ -332,13 +347,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 Заданий: {tasks_done}/{tasks_count}"
         )
         
-        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        kb = [[InlineKeyboardButton("◀️ Назад в меню", callback_data="menu")]]
+        await query.edit_message_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(kb), 
+            parse_mode="Markdown"
+        )
         return
     
     # ===== ПОКАЗАТЬ ЗАДАНИЯ =====
     if data == 'tasks':
-        await show_tasks_list(query, uid, users)
+        await show_tasks(query, uid)
         return
     
     # ===== ВЫПОЛНИТЬ ЗАДАНИЕ =====
@@ -378,7 +397,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if level_up:
             msg += f"\n\n🎉 *ПОЗДРАВЛЯЮ!*\nТы достиг {user['level']} уровня!"
         
-        await query.edit_message_text(msg, parse_mode="Markdown")
+        kb = [[InlineKeyboardButton("◀️ Назад к заданиям", callback_data="tasks")]]
+        await query.edit_message_text(
+            msg, 
+            reply_markup=InlineKeyboardMarkup(kb), 
+            parse_mode="Markdown"
+        )
         return
     
     # ===== ПОКАЗАТЬ ОТРЯД =====
@@ -391,10 +415,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         squad_id = user.get('squad_id')
         
         if not squad_id:
-            kb = [[InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")],
-                  [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
+            kb = [
+                [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")],
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="menu")]
+            ]
             await query.edit_message_text(
-                "🏰 *У тебя нет отряда*",
+                "🏰 *У тебя нет отряда*\n\nСоздай свой отряд!",
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="Markdown"
             )
@@ -417,8 +443,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         text = f"🏰 *{squad.get('name', 'Отряд')}*\n\n👨‍👦 *Участники:*\n{members_text}"
         
-        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        kb = [[InlineKeyboardButton("◀️ Назад в меню", callback_data="menu")]]
+        await query.edit_message_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(kb), 
+            parse_mode="Markdown"
+        )
         return
     
     # ===== СОЗДАТЬ ОТРЯД =====
@@ -428,11 +458,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🏰 *Создание отряда*\n\nПридумай название и напиши его:",
             parse_mode="Markdown"
         )
-        return
-    
-    # ===== НАЗАД В МЕНЮ =====
-    if data == 'back_to_menu':
-        await show_main_menu(query, uid, users)
         return
 
 # ========== ЗАПУСК ==========
