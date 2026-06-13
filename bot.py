@@ -131,10 +131,11 @@ def save_bosses(bosses):
 def generate_squad_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-def new_user(name, cls_key):
+def new_user(name, cls_key, role="child"):
     return {
         "name": name,
         "class": cls_key,
+        "role": role,          # "parent" или "child"
         "level": 1,
         "xp": 0,
         "attrs": {"str": 0, "int": 0, "hp": 0, "agi": 0, "wil": 0},
@@ -276,8 +277,9 @@ def char_card(user):
     done_assigned = len([t for t in user.get("assigned_tasks", []) if t.get("done_date") == today])
     total = len(user.get("tasks", []))
     total_assigned = len(user.get("assigned_tasks", []))
+    role_emoji = "👨‍👦" if user.get("role") == "parent" else "🧒"
     return (
-        f"{cls['emoji']} *{user['name']}* — {cls['name']}\n"
+        f"{cls['emoji']} *{user['name']}* {role_emoji} — {cls['name']}\n"
         f"⭐ Уровень {lvl}   🔥 Стрик {user.get('streak', 0)} дн.\n"
         f"Опыт: {xp} / {xp_max}\n"
         f"`{bar}`\n\n"
@@ -329,7 +331,8 @@ async def show_menu(target, uid, edit=False):
          InlineKeyboardButton("🏰 Отряд", callback_data="squad")],
         [InlineKeyboardButton("⚔️ Босс рейд", callback_data="boss")],
     ]
-    text = f"{cls['emoji']} *{user['name']}* · Ур. {user['level']} · 🔥 {user.get('streak', 0)}\n✅ Сегодня: {done_today}/{total}{assigned_line}{boss_line}"
+    role_emoji = "👨‍👦" if user["role"] == "parent" else "🧒"
+    text = f"{cls['emoji']} *{user['name']}* {role_emoji} · Ур. {user['level']} · 🔥 {user.get('streak', 0)}\n✅ Сегодня: {done_today}/{total}{assigned_line}{boss_line}"
     markup = InlineKeyboardMarkup(kb)
     if edit:
         await target.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
@@ -394,13 +397,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 squads[old_squad]["members"].remove(uid)
             
             users[uid]["squad_id"] = squad_code
+            users[uid]["role"] = "child"        # вступающий становится ребёнком
             if uid not in squads[squad_code]["members"]:
                 squads[squad_code]["members"].append(uid)
             
             save_users(users)
             save_squads(squads)
             
-            await update.message.reply_text(f"✅ Ты вступил в отряд *{squads[squad_code]['name']}*!\n\nИспользуй /menu", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Ты вступил в отряд *{squads[squad_code]['name']}*!\nТвоя роль: Ребёнок 🧒\nИспользуй /menu", parse_mode="Markdown")
         else:
             ctx.user_data["pending_squad"] = squad_code
             await update.message.reply_text("⚔️ Сначала создай героя: /start\n\nПосле создания героя ты автоматически попадёшь в отряд.")
@@ -414,17 +418,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         squad_id = generate_squad_code()
         squads = load_squads()
-        squads[squad_id] = {"name": text, "members": [uid], "created": str(date.today()), "code": squad_id}
+        squads[squad_id] = {"name": text, "members": [uid], "created": str(date.today()), "creator": uid}
         save_squads(squads)
         users = load_users()
         if uid in users:
             users[uid]["squad_id"] = squad_id
+            users[uid]["role"] = "parent"      # создатель – родитель
             save_users(users)
         ctx.user_data["step"] = None
         await update.message.reply_text(
             f"🏰 *Отряд «{text}» создан!*\n\n"
             f"📌 Код отряда: `{squad_id}`\n\n"
-            f"Отправь этот код сыну, чтобы он вступил в отряд.\n\n"
+            f"👨‍👦 Ты – Родитель. Отправь этот код ребёнку, чтобы он вступил в отряд.\n\n"
             f"Теперь ты можешь давать ему задания через раздел «Отряд»!\n\n"
             f"Используй /menu для продолжения",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 В меню", callback_data="menu")]]),
@@ -524,6 +529,47 @@ async def show_tasks_menu(query, uid):
     
     await query.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
+# ========== ОТРЯД ==========
+
+async def show_squad_menu(query, uid, squad_id):
+    users = load_users()
+    squads = load_squads()
+    squad = squads.get(squad_id, {})
+    user = users.get(uid)
+    is_parent = (user.get("role") == "parent")
+    today = str(date.today())
+    members_text = ""
+    kb = []
+    
+    for mid in squad.get("members", []):
+        m = users.get(mid)
+        if not m:
+            continue
+        cls = CLASSES[m["class"]]
+        role_emoji = "👨‍👦" if m.get("role") == "parent" else "🧒"
+        assigned_tasks = len([t for t in m.get("assigned_tasks", []) if t.get("done_date") != today])
+        members_text += f"{cls['emoji']} *{m['name']}* {role_emoji} — Ур.{m['level']} · 🔥{m.get('streak',0)}"
+        if assigned_tasks > 0:
+            members_text += f" 📋{assigned_tasks}"
+        members_text += "\n"
+        
+        # Кнопка "Дать задание" только для родителей и не себе
+        if is_parent and mid != uid:
+            kb.append([InlineKeyboardButton(f"📝 Дать задание {m['name']}", callback_data=f"assign_to_{mid}")])
+
+    squad_code = squad_id
+    kb.append([InlineKeyboardButton("🔑 Показать код отряда", callback_data="show_code")])
+    kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
+
+    await query.edit_message_text(
+        f"🏰 *{squad['name']}*\n\n{members_text}\n\n"
+        f"👨‍👦 *Ты {'родитель' if is_parent else 'ребёнок'}.*\n"
+        f"{'Нажимай на кнопку «Дать задание» под именем ребёнка.' if is_parent else 'Задания тебе может давать родитель.'}\n\n"
+        f"🔑 Код отряда: `{squad_code}`",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
+
 # ========== CALLBACKS ==========
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -544,13 +590,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("class_"):
         cls_key = data.replace("class_", "")
         name = ctx.user_data.get("temp_name", "Герой")
-        users[uid] = new_user(name, cls_key)
+        # при создании героя без отряда — временно ребёнок (потом может стать родителем, если создаст отряд)
+        users[uid] = new_user(name, cls_key, role="child")
         
         pending = ctx.user_data.get("pending_squad")
         if pending:
             squads = load_squads()
             if pending in squads:
                 users[uid]["squad_id"] = pending
+                users[uid]["role"] = "child"
                 if uid not in squads[pending]["members"]:
                     squads[pending]["members"].append(uid)
                 save_squads(squads)
@@ -558,7 +606,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             save_users(users)
             await query.edit_message_text(
                 f"{CLASSES[cls_key]['emoji']} Герой *{name}* ({CLASSES[cls_key]['name']}) создан!\n\n"
-                f"✅ Ты автоматически вступил в отряд!\n\nИспользуй /menu",
+                f"✅ Ты автоматически вступил в отряд!\nТвоя роль: Ребёнок 🧒\n\nИспользуй /menu",
                 parse_mode="Markdown"
             )
             return
@@ -703,6 +751,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("assign_to_"):
+        # Проверка: только родитель может давать задания
+        if user.get("role") != "parent":
+            await query.answer("❌ Только родители могут давать задания!", show_alert=True)
+            return
         target_uid = data.replace("assign_to_", "")
         target_user = users.get(target_uid)
         if not target_user:
@@ -823,6 +875,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("🔄 Новый босс появится завтра!")
         return
 
+    if data == "show_code":
+        squad_id = user.get("squad_id")
+        if squad_id:
+            await query.edit_message_text(f"🔑 Код вашего отряда: `{squad_id}`\n\nОтправь его тому, кого хочешь пригласить.", parse_mode="Markdown")
+        else:
+            await query.edit_message_text("У вас нет отряда.")
+        return
+
 # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
 
 async def apply_boss_damage(uid, attr_key, user, users, query):
@@ -854,39 +914,6 @@ async def apply_boss_damage(uid, attr_key, user, users, query):
     save_bosses(bosses)
     return msg
 
-async def show_squad_menu(query, uid, squad_id):
-    users = load_users()
-    squads = load_squads()
-    squad = squads.get(squad_id, {})
-    today = str(date.today())
-    members_text = ""
-    kb = []
-    
-    for mid in squad.get("members", []):
-        m = users.get(mid)
-        if not m:
-            continue
-        cls = CLASSES[m["class"]]
-        assigned_tasks = len([t for t in m.get("assigned_tasks", []) if t.get("done_date") != today])
-        members_text += f"{cls['emoji']} *{m['name']}* — Ур.{m['level']} · 🔥{m.get('streak',0)}\n"
-        if assigned_tasks > 0:
-            members_text += f"  📋 Активных заданий: {assigned_tasks}\n"
-        
-        if mid != uid:
-            kb.append([InlineKeyboardButton(f"📝 Дать задание {m['name']}", callback_data=f"assign_to_{mid}")])
-
-    squad_code = squad_id
-    kb.append([InlineKeyboardButton("🔑 Показать код отряда", callback_data="show_code")])
-    kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
-
-    await query.edit_message_text(
-        f"🏰 *{squad['name']}*\n\n{members_text}\n\n"
-        f"👨‍👦 *Как дать задание ребёнку?*\n"
-        f"Просто нажми на кнопку «Дать задание» под именем ребёнка!",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown"
-    )
-
 # ========== ЗАПУСК ==========
 
 async def post_init(app):
@@ -907,4 +934,3 @@ def main():
 
 if __name__ == "__main__":
     keep_alive()
-    main()
