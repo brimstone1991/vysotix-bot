@@ -614,7 +614,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         if uid not in users:
             logger.error(f"User {uid} not found in users!")
-            await update.message.reply_text("Ошибка: сначала создай героя")
+            await update.message.reply_text("Ошибка: сначала создай героя с помощью /start")
             return
         
         users[uid]["squad_id"] = squad_id
@@ -630,14 +630,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🏰 *Отряд «{text}» создан!*\n\n"
             f"🔑 Код для вступления: `{squad_id}`\n\n"
             f"🔗 Ссылка-приглашение:\n{link}\n\n"
-            f"*Дай этот код друзьям, чтобы они вступили!*",
+            f"*Отправь этот код ребенку, чтобы он вступил в отряд!*",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🎮 В главное меню", callback_data="menu")]
             ]),
             parse_mode="Markdown"
         )
         
-        logger.info("Showing menu after squad creation")
         await show_menu(update, uid)
         return
 
@@ -797,13 +796,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await show_menu(query, uid, edit=True)
                 return
         
-        ctx.user_data["hero_created"] = True
-        ctx.user_data["hero_name"] = name
-        ctx.user_data["hero_class"] = cls_key
+        ctx.user_data.pop("temp_name", None)
+        ctx.user_data.pop("temp_role", None)
         
         kb = [
             [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")],
             [InlineKeyboardButton("🔑 Вступить по коду", callback_data="join_squad_by_code")],
+            [InlineKeyboardButton("🎮 Пропустить", callback_data="menu")],
         ]
         await query.edit_message_text(
             f"{CLASSES.get(cls_key, CLASSES['warrior'])['emoji']} Герой *{name}* ({CLASSES.get(cls_key, CLASSES['warrior'])['name']}) создан!\n\n"
@@ -817,9 +816,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "create_squad_after_hero":
         logger.info(f"Creating squad after hero for user {uid}")
         ctx.user_data["step"] = "squad_name"
-        ctx.user_data["from_hero_creation"] = True
         await query.edit_message_text(
-            "🏰 Придумай название отряда и напиши его:",
+            "🏰 Придумай название отряда и напиши его:\n\n"
+            "_Например: «Семья Ивановых», «Отряд богатырей»_",
             parse_mode="Markdown"
         )
         return
@@ -1366,8 +1365,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "create_squad":
         ctx.user_data["step"] = "squad_name"
-        ctx.user_data["from_hero_creation"] = False
-        await query.edit_message_text("🏰 Придумай название отряда и напиши его:")
+        await query.edit_message_text(
+            "🏰 Придумай название отряда и напиши его:\n\n"
+            "_Например: «Семья Ивановых», «Отряд богатырей»_",
+            parse_mode="Markdown"
+        )
         return
 
     # --- Просмотр заданий участника ---
