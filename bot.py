@@ -495,7 +495,6 @@ async def show_assign_menu(query, uid):
     today = str(date.today())
     
     for child_id, child in children:
-        cls = CLASSES.get(child["class"], CLASSES["warrior"])
         assigned_tasks = child.get("assigned_tasks", [])
         done_today = len([t for t in assigned_tasks if t.get("done_date") == today])
         pending = len(assigned_tasks) - done_today
@@ -702,29 +701,21 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = users.get(uid)
         if not user or user.get("role") != "parent":
             await update.message.reply_text("Только родители могут давать задания!")
-            ctx.user_data["awaiting_assign_task_name"] = False
+            ctx.user_data.pop("awaiting_assign_task_name", None)
+            ctx.user_data.pop("assign_target_uid", None)
+            ctx.user_data.pop("task_difficulty", None)
             return
 
         ctx.user_data["temp_assign_task_name"] = text
         ctx.user_data["awaiting_assign_task_name"] = False
+        
         kb = [[InlineKeyboardButton(f"{a['emoji']} {a['name']} — {a['hint']}", callback_data=f"aattr_{k}")]
               for k, a in ATTRS.items()]
+        kb.append([InlineKeyboardButton("◀️ Отмена", callback_data="cancel_assign")])
+        
         await update.message.reply_text(
             "Какой атрибут качает это задание?",
             reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
-
-    if ctx.user_data.get("awaiting_deadline"):
-        ctx.user_data["awaiting_deadline"] = False
-        await update.message.reply_text(
-            "Выберите срок выполнения:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Сегодня", callback_data="deadline_0")],
-                [InlineKeyboardButton("Завтра", callback_data="deadline_1")],
-                [InlineKeyboardButton("3 дня", callback_data="deadline_3")],
-                [InlineKeyboardButton("Неделя", callback_data="deadline_7")],
-            ])
         )
         return
 
@@ -946,11 +937,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer("Ошибка сложности", show_alert=True)
             return
         
+        target_uid = ctx.user_data.get("assign_target_uid")
+        if not target_uid or target_uid not in users:
+            await query.answer("Ошибка: ребенок не выбран", show_alert=True)
+            return
+        
         ctx.user_data["task_difficulty"] = diff_key
         ctx.user_data["awaiting_assign_task_name"] = True
-        target_uid = ctx.user_data.get("assign_target_uid")
-        target_user = users.get(target_uid)
         
+        target_user = users[target_uid]
         await query.edit_message_text(
             f"📝 *Новое {diff['name'].lower()} задание для {target_user['name']}*\n\n"
             f"Напишите название задания:\n"
@@ -1013,7 +1008,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "stars_reward": diff["stars"],
             "done": False,
             "done_date": "",
-            "deadline": str(date.today() + timedelta(days=tmpl.get("deadline_days", 1))),
+            "deadline": str(date.today()),
             "difficulty": tmpl.get("difficulty", "medium"),
             "assigned_by": uid,
             "assigned_by_name": user["name"],
@@ -1026,14 +1021,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         attr = ATTRS[tmpl["attr"]]
         
         try:
-            await query.get_bot().send_message(
+            await query.bot.send_message(
                 chat_id=int(target_uid),
                 text=(
                     f"👨‍👦 *{user['name']}* назначил тебе задание!\n\n"
                     f"📋 *{tmpl['name']}*\n"
                     f"{attr['emoji']} {attr['name']}\n"
                     f"{diff['emoji']} +{diff['xp']} XP | +{diff['stars']}🌟\n"
-                    f"⏰ Выполнить до: {task['deadline']}\n\n"
+                    f"⏰ Выполнить сегодня\n\n"
                     f"Открой /menu → Задания чтобы выполнить его."
                 ),
                 parse_mode="Markdown"
@@ -1053,7 +1048,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"{attr['emoji']} Атрибут: {attr['name']}\n"
             f"{diff['emoji']} Сложность: {diff['name']}\n"
             f"🌟 +{diff['stars']} звёзд при выполнении\n"
-            f"⏰ Срок: {task['deadline']}",
+            f"⏰ Срок: сегодня",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
@@ -1128,7 +1123,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         assigner_uid = task.get("assigned_by")
         if assigner_uid:
             try:
-                await query.get_bot().send_message(
+                await query.bot.send_message(
                     chat_id=int(assigner_uid),
                     text=(
                         f"✅ *{user['name']}* выполнил ваше задание!\n\n"
@@ -1172,55 +1167,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("aattr_"):
         attr_key = data.replace("aattr_", "")
         target_uid = ctx.user_data.get("assign_target_uid")
-        task_name = ctx.user_data.get("temp_assign_task_name", "Задание")
+        task_name = ctx.user_data.get("temp_assign_task_name", "")
         diff_key = ctx.user_data.get("task_difficulty", "medium")
         diff = TASK_DIFFICULTY.get(diff_key, TASK_DIFFICULTY["medium"])
         
         if not target_uid or target_uid not in users:
             await query.edit_message_text("Ошибка. Попробуй снова из меню заданий.")
+            return
+        
+        if not task_name:
+            await query.edit_message_text("Ошибка: название задания потерялось. Попробуйте снова.")
             return
             
         if user.get("role") != "parent":
             await query.edit_message_text("Только родители могут давать задания!")
             return
         
-        ctx.user_data["temp_task_attr"] = attr_key
-        ctx.user_data["awaiting_deadline"] = True
-        
-        kb = [
-            [InlineKeyboardButton("Сегодня", callback_data="deadline_0")],
-            [InlineKeyboardButton("Завтра", callback_data="deadline_1")],
-            [InlineKeyboardButton("3 дня", callback_data="deadline_3")],
-            [InlineKeyboardButton("Неделя", callback_data="deadline_7")],
-        ]
-        
         target_user = users[target_uid]
-        await query.edit_message_text(
-            f"⏰ *Срок выполнения*\n\n"
-            f"Задание: {task_name}\n"
-            f"Атрибут: {ATTRS[attr_key]['emoji']} {ATTRS[attr_key]['name']}\n"
-            f"Сложность: {diff['emoji']} {diff['name']}\n\n"
-            f"Когда нужно выполнить?",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
-        )
-        return
-
-    # --- Выбор дедлайна ---
-    if data.startswith("deadline_"):
-        days = int(data.replace("deadline_", ""))
-        target_uid = ctx.user_data.get("assign_target_uid")
-        task_name = ctx.user_data.get("temp_assign_task_name", "Задание")
-        attr_key = ctx.user_data.get("temp_task_attr", "wil")
-        diff_key = ctx.user_data.get("task_difficulty", "medium")
-        diff = TASK_DIFFICULTY.get(diff_key, TASK_DIFFICULTY["medium"])
-        
-        if not target_uid or target_uid not in users:
-            await query.edit_message_text("Ошибка. Попробуй снова из меню заданий.")
-            return
-        
-        target_user = users[target_uid]
-        deadline = str(date.today() + timedelta(days=days)) if days > 0 else str(date.today())
+        deadline = str(date.today())
         
         task = {
             "id": str(uuid.uuid4())[:8],
@@ -1243,29 +1207,29 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "name": task_name,
             "attr": attr_key,
             "difficulty": diff_key,
-            "deadline_days": days,
+            "deadline_days": 0,
         }
         if template not in user.get("task_templates", []):
             user.setdefault("task_templates", []).append(template)
         
         save_users(users)
         
-        ctx.user_data["temp_assign_task_name"] = None
-        ctx.user_data["temp_task_attr"] = None
-        ctx.user_data["task_difficulty"] = None
-        ctx.user_data["assign_target_uid"] = None
+        ctx.user_data.pop("temp_assign_task_name", None)
+        ctx.user_data.pop("task_difficulty", None)
+        ctx.user_data.pop("assign_target_uid", None)
+        ctx.user_data.pop("awaiting_assign_task_name", None)
         
         attr = ATTRS[attr_key]
         
         try:
-            await query.get_bot().send_message(
+            await query.bot.send_message(
                 chat_id=int(target_uid),
                 text=(
                     f"👨‍👦 *{user['name']}* назначил тебе задание!\n\n"
                     f"📋 *{task_name}*\n"
                     f"{attr['emoji']} {attr['name']}\n"
                     f"{diff['emoji']} +{diff['xp']} XP | +{diff['stars']}🌟\n"
-                    f"⏰ Выполнить до: {deadline}\n\n"
+                    f"⏰ Выполнить сегодня\n\n"
                     f"Открой /menu → Задания чтобы выполнить его."
                 ),
                 parse_mode="Markdown"
@@ -1286,11 +1250,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"{attr['emoji']} Атрибут: {attr['name']}\n"
             f"{diff['emoji']} Сложность: {diff['name']}\n"
             f"🌟 +{diff['stars']} звёзд при выполнении\n"
-            f"⏰ Срок: {deadline}\n\n"
+            f"⏰ Срок: сегодня\n\n"
             f"📋 Сохранено в шаблоны!",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
+        return
+
+    # --- Отмена назначения ---
+    if data == "cancel_assign":
+        ctx.user_data.pop("temp_assign_task_name", None)
+        ctx.user_data.pop("task_difficulty", None)
+        ctx.user_data.pop("awaiting_assign_task_name", None)
+        await show_assign_menu(query, uid)
         return
 
     # --- Магазин наград ---
@@ -1347,7 +1319,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 m = users.get(mid)
                 if m and m.get("role") == "parent":
                     try:
-                        await query.get_bot().send_message(
+                        await query.bot.send_message(
                             chat_id=int(mid),
                             text=(
                                 f"🌟 *{user['name']}* хочет получить награду!\n\n"
@@ -1601,7 +1573,7 @@ async def show_squad_menu(query, uid, squad_id):
                     callback_data=f"view_member_{mid}"
                 )])
 
-    bot_me = await query.get_bot().get_me()
+    bot_me = await query.bot.get_me()
     link = f"https://t.me/{bot_me.username}?start=squad_{squad_id}"
     kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
 
