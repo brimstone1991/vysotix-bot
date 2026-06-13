@@ -421,29 +421,40 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
             return
+        
         squad_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
         squads = load_squads()
+        users = load_users()
+        
         squads[squad_id] = {"name": text, "members": [uid], "created": str(date.today())}
         save_squads(squads)
-        users = load_users()
+        
         if uid in users:
             users[uid]["squad_id"] = squad_id
             save_users(users)
+        
         bot_me = await ctx.bot.get_me()
         link = f"https://t.me/{bot_me.username}?start=squad_{squad_id}"
-        ctx.user_data["step"] = None
         
-        from_hero = ctx.user_data.get("from_hero_creation", False)
+        was_from_hero = ctx.user_data.get("from_hero_creation", False)
+        ctx.user_data["step"] = None
         ctx.user_data["from_hero_creation"] = False
+        ctx.user_data.pop("temp_name", None)
+        ctx.user_data.pop("temp_class", None)
         
         await update.message.reply_text(
             f"🏰 *Отряд «{text}» создан!*\n\n"
             f"🔑 Код для вступления: `{squad_id}`\n\n"
             f"🔗 Ссылка-приглашение:\n{link}\n\n"
             f"*Дай этот код друзьям, чтобы они вступили!*",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 В меню", callback_data="menu")]]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎮 В меню", callback_data="menu")]
+            ]),
             parse_mode="Markdown"
         )
+        
+        if was_from_hero:
+            await show_menu(update, uid)
         return
 
     if step == "enter_squad_code":
@@ -572,7 +583,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "create_squad_after_hero":
         ctx.user_data["step"] = "squad_name"
         ctx.user_data["from_hero_creation"] = True
-        await query.edit_message_text("🏰 Придумай название отряда и напиши его:")
+        if "temp_name" in ctx.user_data and "temp_class" in ctx.user_data:
+            ctx.user_data["hero_name"] = ctx.user_data["temp_name"]
+            ctx.user_data["hero_class"] = ctx.user_data["temp_class"]
+        await query.edit_message_text(
+            "🏰 Придумай название отряда и напиши его:",
+            parse_mode="Markdown"
+        )
         return
     
     # --- Вступить в отряд по коду ---
@@ -580,7 +597,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["step"] = "enter_squad_code"
         await query.edit_message_text(
             "🔑 Введи 6-значный код отряда:\n\n"
-            "*(код можно найти в разделе отряда у создателя)*"
+            "*(код можно найти в разделе отряда у создателя)*",
+            parse_mode="Markdown"
         )
         return
 
