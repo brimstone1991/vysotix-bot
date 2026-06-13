@@ -432,7 +432,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         # Обновляем пользователя
         if uid not in users:
-            # Если пользователь ещё не создан (не должно случиться, но на всякий случай)
             await update.message.reply_text("Ошибка: сначала создай героя")
             return
         
@@ -441,8 +440,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         bot_me = await ctx.bot.get_me()
         link = f"https://t.me/{bot_me.username}?start=squad_{squad_id}"
-        
-        was_from_hero = ctx.user_data.get("from_hero_creation", False)
         
         # Сбрасываем все состояния
         ctx.user_data.clear()
@@ -469,7 +466,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "❌ Код должен быть 6 символов (буквы и цифры).\n\nПопробуй ещё раз:"
             )
             return
-        ctx.user_data["temp_squad_code"] = code
         squads = load_squads()
         if code in squads:
             users = load_users()
@@ -571,9 +567,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await show_menu(query, uid, edit=True)
                 return
         
-        ctx.user_data["step"] = "post_hero_choice"
-        ctx.user_data["temp_name"] = name
-        ctx.user_data["temp_class"] = cls_key
+        # Сохраняем данные героя для последующего использования
+        ctx.user_data["hero_name"] = name
+        ctx.user_data["hero_class"] = cls_key
+        ctx.user_data["hero_created"] = True
+        
         kb = [
             [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")],
             [InlineKeyboardButton("🔑 Вступить по коду", callback_data="join_squad_by_code")],
