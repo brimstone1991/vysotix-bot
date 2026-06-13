@@ -11,6 +11,7 @@ import string
 import uuid
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("BOT_TOKEN", "")
 DATA_FILE = "data/users.json"
 SQUADS_FILE = "data/squads.json"
@@ -401,6 +402,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     text = update.message.text.strip()
     step = ctx.user_data.get("step")
+    
+    logger.info(f"handle_text: uid={uid}, step={step}, text={text}")
 
     if step == "name":
         if len(text) < 2 or len(text) > 20:
@@ -418,6 +421,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "squad_name":
+        logger.info(f"Creating squad with name: {text}")
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
             return
@@ -429,14 +433,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Создаём отряд
         squads[squad_id] = {"name": text, "members": [uid], "created": str(date.today())}
         save_squads(squads)
+        logger.info(f"Squad created: {squad_id}")
         
         # Обновляем пользователя
         if uid not in users:
+            logger.error(f"User {uid} not found in users!")
             await update.message.reply_text("Ошибка: сначала создай героя")
             return
         
         users[uid]["squad_id"] = squad_id
         save_users(users)
+        logger.info(f"User {uid} updated with squad_id {squad_id}")
         
         bot_me = await ctx.bot.get_me()
         link = f"https://t.me/{bot_me.username}?start=squad_{squad_id}"
@@ -456,6 +463,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         
         # Показываем меню
+        logger.info("Showing menu after squad creation")
         await show_menu(update, uid)
         return
 
@@ -531,6 +539,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = str(query.from_user.id)
     data = query.data
+    logger.info(f"Callback: uid={uid}, data={data}")
+    
     users = load_users()
     user = users.get(uid)
 
@@ -548,6 +558,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         name = ctx.user_data.get("temp_name", "Герой")
         users[uid] = new_user(name, cls_key)
         save_users(users)
+        logger.info(f"User {uid} created with class {cls_key}")
         
         pending_code = ctx.user_data.get("pending_squad_code")
         if pending_code:
@@ -567,10 +578,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await show_menu(query, uid, edit=True)
                 return
         
-        # Сохраняем данные героя для последующего использования
+        # Сохраняем в user_data, что герой создан
+        ctx.user_data["hero_created"] = True
         ctx.user_data["hero_name"] = name
         ctx.user_data["hero_class"] = cls_key
-        ctx.user_data["hero_created"] = True
         
         kb = [
             [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")],
@@ -586,6 +597,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # --- Создать отряд после создания героя ---
     if data == "create_squad_after_hero":
+        logger.info(f"Creating squad after hero for user {uid}")
         ctx.user_data["step"] = "squad_name"
         ctx.user_data["from_hero_creation"] = True
         await query.edit_message_text(
