@@ -59,6 +59,22 @@ GEAR_UNLOCKS = {
 
 XP_TABLE = [0, 100, 200, 350, 500, 700, 950, 1250, 1600, 2000, 2500]
 
+TASK_DIFFICULTY = {
+    "easy": {"name": "Лёгкое", "emoji": "⭐", "xp": 20, "attr": 1, "stars": 1},
+    "medium": {"name": "Среднее", "emoji": "🌟🌟", "xp": 35, "attr": 2, "stars": 2},
+    "hard": {"name": "Сложное", "emoji": "🌟🌟🌟", "xp": 50, "attr": 3, "stars": 3},
+}
+
+REWARDS_SHOP = {
+    "screen_time": {"name": "📱 30 мин экранного времени", "cost": 5, "desc": "Дополнительные 30 минут"},
+    "screen_time_1h": {"name": "📱 1 час экранного времени", "cost": 8, "desc": "Дополнительный час"},
+    "sweets": {"name": "🍬 Сладости", "cost": 3, "desc": "Любимое лакомство"},
+    "movie": {"name": "🎬 Кино вечером", "cost": 10, "desc": "Выбор фильма на вечер"},
+    "game": {"name": "🎮 Игровой вечер", "cost": 12, "desc": "Дополнительное время на игры"},
+    "park": {"name": "🌳 Поход в парк", "cost": 15, "desc": "Прогулка в любимом парке"},
+    "toy": {"name": "🎁 Новая игрушка", "cost": 25, "desc": "Небольшой подарок на выбор"},
+}
+
 BOSS_POOL = [
     {
         "phases": ["🐉 Дракон Лени", "🔥 Пылающий Дракон", "💀 Дракон Тьмы"],
@@ -149,6 +165,10 @@ def new_user(name, cls_key, role="child"):
         "assigned_tasks": [],
         "gear": [],
         "squad_id": None,
+        "stars": 0,
+        "reward_history": [],
+        "task_templates": [],
+        "notify_time": None,
     }
 
 def xp_needed(lvl):
@@ -296,7 +316,8 @@ def char_card(user):
     if user.get("role") != "parent":
         done_assigned = len([t for t in user.get("assigned_tasks", []) if t.get("done_date") == today])
         total_assigned = len(user.get("assigned_tasks", []))
-        card += f"👨👦 От родителей: {done_assigned}/{total_assigned}"
+        card += f"👨👦 От родителей: {done_assigned}/{total_assigned}\n"
+        card += f"🌟 Звёзды: {user.get('stars', 0)}"
     return card
 
 # ========== ГЛАВНОЕ МЕНЮ ==========
@@ -322,7 +343,6 @@ async def show_menu(target, uid, edit=False):
         
         squad_id = user.get("squad_id")
         squads = load_squads()
-        squad_name = squads.get(squad_id, {}).get("name", "Нет отряда") if squad_id else "Нет отряда"
         
         children_info = ""
         children_list = []
@@ -341,7 +361,7 @@ async def show_menu(target, uid, edit=False):
                     m_total_assigned = len(m.get("assigned_tasks", []))
                     children_info += (
                         f"  {m_cls['emoji']} *{m['name']}* (Ур. {m['level']}): "
-                        f"свои {m_done_today}/{m_total} | от родителей {m_done_assigned}/{m_total_assigned}\n"
+                        f"свои {m_done_today}/{m_total} | от родителей {m_done_assigned}/{m_total_assigned} | 🌟{m.get('stars', 0)}\n"
                     )
         if children_info:
             children_info = f"\n*🧒 Дети:*\n{children_info}"
@@ -380,6 +400,7 @@ async def show_menu(target, uid, edit=False):
         done_assigned = len([t for t in user.get("assigned_tasks", []) if t.get("done_date") == today])
         total = len(user.get("tasks", []))
         total_assigned = len(user.get("assigned_tasks", []))
+        stars = user.get("stars", 0)
 
         squad_id = user.get("squad_id")
         boss_line = ""
@@ -401,10 +422,12 @@ async def show_menu(target, uid, edit=False):
              InlineKeyboardButton("📋 Задания", callback_data="tasks")],
             [InlineKeyboardButton("➕ Добавить задание", callback_data="add_task"),
              InlineKeyboardButton("🏰 Отряд", callback_data="squad")],
+            [InlineKeyboardButton("🌟 Магазин наград", callback_data="reward_shop")],
             [InlineKeyboardButton("⚔️ Босс рейд", callback_data="boss")],
         ]
         text = (
             f"{cls['emoji']} *{user['name']}* · Ур. {user['level']} · 🔥 {user.get('streak', 0)}\n"
+            f"🌟 Звёзды: {stars}\n"
             f"✅ Сегодня: {done_today}/{total}"
             f"{assigned_line}"
             f"{boss_line}"
@@ -470,7 +493,7 @@ async def show_assign_menu(query, uid):
             status += " · ✅ все выполнены"
         
         kb.append([InlineKeyboardButton(
-            f"👤 {child['name']} (Ур.{child['level']}) - {status}",
+            f"👤 {child['name']} (Ур.{child['level']}) · 🌟{child.get('stars', 0)} - {status}",
             callback_data=f"assign_to_{child_id}"
         )])
     
@@ -678,6 +701,19 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if ctx.user_data.get("awaiting_deadline"):
+        ctx.user_data["awaiting_deadline"] = False
+        await update.message.reply_text(
+            "Выберите срок выполнения:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Сегодня", callback_data="deadline_0")],
+                [InlineKeyboardButton("Завтра", callback_data="deadline_1")],
+                [InlineKeyboardButton("3 дня", callback_data="deadline_3")],
+                [InlineKeyboardButton("Неделя", callback_data="deadline_7")],
+            ])
+        )
+        return
+
 # ========== CALLBACKS ==========
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -703,9 +739,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["temp_role"] = "parent"
         ctx.user_data["step"] = "name"
         await query.edit_message_text("Как вас зовут? (Имя родителя):")
-        return
-
-    if data == "role_child":
+        return    if data == "role_child":
         ctx.user_data["temp_role"] = "child"
         ctx.user_data["step"] = "name"
         await query.edit_message_text("Как зовут твоего героя? (Имя ребенка):")
@@ -861,51 +895,150 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         ctx.user_data["assign_target_uid"] = target_uid
         
-        kb = [
-            [InlineKeyboardButton("📝 Написать задание", callback_data="write_assign")],
-            [InlineKeyboardButton("👁 Посмотреть задания", callback_data=f"view_member_{target_uid}")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="assign_menu")],
-        ]
+        kb = []
+        for diff_key, diff in TASK_DIFFICULTY.items():
+            kb.append([InlineKeyboardButton(
+                f"{diff['emoji']} {diff['name']} (+{diff['xp']} XP, +{diff['attr']} атр, {diff['stars']}🌟)",
+                callback_data=f"set_diff_{diff_key}"
+            )])
+        
+        kb.append([InlineKeyboardButton("📋 Из шаблона", callback_data="from_template")])
+        kb.append([InlineKeyboardButton("👁 Посмотреть задания", callback_data=f"view_member_{target_uid}")])
+        kb.append([InlineKeyboardButton("◀️ Назад", callback_data="assign_menu")])
         
         target_cls = CLASSES.get(target_user["class"], CLASSES["warrior"])
         today = str(date.today())
         assigned = target_user.get("assigned_tasks", [])
         done = len([t for t in assigned if t.get("done_date") == today])
         
-        task_list = ""
-        for t in assigned[-5:]:
-            status = "✅" if t.get("done_date") == today else "⏳"
-            a = ATTRS[t["attr"]]
-            task_list += f"{status} {t['name']} {a['emoji']}\n"
-        
         await query.edit_message_text(
-            f"👤 *{target_user['name']}* ({target_cls['name']}) · Ур.{target_user['level']}\n\n"
+            f"👤 *{target_user['name']}* ({target_cls['name']}) · Ур.{target_user['level']}\n"
+            f"🌟 Звёзд: {target_user.get('stars', 0)}\n\n"
             f"📋 Заданий от вас: {len(assigned)}\n"
             f"✅ Выполнено сегодня: {done}/{len(assigned)}\n\n"
-            f"{'*Последние задания:*' + chr(10) + task_list if task_list else 'Нет заданий'}\n\n"
-            f"Выберите действие:",
+            f"*Выберите сложность задания:*",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
         return
 
-    # --- Написать задание ---
-    if data == "write_assign":
-        if user.get("role") != "parent":
-            await query.answer("Только родители могут давать задания!", show_alert=True)
+    # --- Выбор сложности задания ---
+    if data.startswith("set_diff_"):
+        diff_key = data.replace("set_diff_", "")
+        diff = TASK_DIFFICULTY.get(diff_key)
+        if not diff:
+            await query.answer("Ошибка сложности", show_alert=True)
             return
         
-        target_uid = ctx.user_data.get("assign_target_uid")
-        if not target_uid or target_uid not in users:
-            await query.answer("Ошибка: ребенок не выбран", show_alert=True)
-            return
-        
+        ctx.user_data["task_difficulty"] = diff_key
         ctx.user_data["awaiting_assign_task_name"] = True
-        target_user = users[target_uid]
+        target_uid = ctx.user_data.get("assign_target_uid")
+        target_user = users.get(target_uid)
+        
         await query.edit_message_text(
-            f"📝 *Новое задание для {target_user['name']}*\n\n"
+            f"📝 *Новое {diff['name'].lower()} задание для {target_user['name']}*\n\n"
             f"Напишите название задания:\n"
-            f"_Например: «Прочитать 10 страниц», «Сделать зарядку», «Помыть посуду»_",
+            f"_{diff['emoji']} +{diff['xp']} XP | +{diff['attr']} к атрибуту | +{diff['stars']}🌟_",
+            parse_mode="Markdown"
+        )
+        return
+
+    # --- Из шаблона ---
+    if data == "from_template":
+        target_uid = ctx.user_data.get("assign_target_uid")
+        target_user = users.get(target_uid)
+        templates = user.get("task_templates", [])
+        
+        if not templates:
+            await query.answer("У вас нет сохранённых шаблонов", show_alert=True)
+            return
+        
+        kb = []
+        for i, tmpl in enumerate(templates):
+            diff = TASK_DIFFICULTY.get(tmpl.get("difficulty", "medium"), TASK_DIFFICULTY["medium"])
+            kb.append([InlineKeyboardButton(
+                f"{tmpl['name']} {diff['emoji']}",
+                callback_data=f"use_tmpl_{i}"
+            )])
+        
+        kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"assign_to_{target_uid}")])
+        
+        await query.edit_message_text(
+            f"📋 *Шаблоны заданий*\n\nВыберите шаблон для {target_user['name']}:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
+    # --- Использование шаблона ---
+    if data.startswith("use_tmpl_"):
+        idx = int(data.replace("use_tmpl_", ""))
+        templates = user.get("task_templates", [])
+        if idx >= len(templates):
+            await query.answer("Шаблон не найден", show_alert=True)
+            return
+        
+        tmpl = templates[idx]
+        target_uid = ctx.user_data.get("assign_target_uid")
+        
+        if not target_uid or target_uid not in users:
+            await query.edit_message_text("Ошибка. Попробуй снова.")
+            return
+        
+        target_user = users[target_uid]
+        diff = TASK_DIFFICULTY.get(tmpl.get("difficulty", "medium"), TASK_DIFFICULTY["medium"])
+        
+        task = {
+            "id": str(uuid.uuid4())[:8],
+            "name": tmpl["name"],
+            "attr": tmpl["attr"],
+            "xp_gain": diff["xp"],
+            "attr_gain": diff["attr"],
+            "stars_reward": diff["stars"],
+            "done": False,
+            "done_date": "",
+            "deadline": str(date.today() + timedelta(days=tmpl.get("deadline_days", 1))),
+            "difficulty": tmpl.get("difficulty", "medium"),
+            "assigned_by": uid,
+            "assigned_by_name": user["name"],
+            "created_date": str(date.today()),
+        }
+        
+        target_user.setdefault("assigned_tasks", []).append(task)
+        save_users(users)
+        
+        attr = ATTRS[tmpl["attr"]]
+        
+        try:
+            await query.get_bot().send_message(
+                chat_id=int(target_uid),
+                text=(
+                    f"👨‍👦 *{user['name']}* назначил тебе задание!\n\n"
+                    f"📋 *{tmpl['name']}*\n"
+                    f"{attr['emoji']} {attr['name']}\n"
+                    f"{diff['emoji']} +{diff['xp']} XP | +{diff['stars']}🌟\n"
+                    f"⏰ Выполнить до: {task['deadline']}\n\n"
+                    f"Открой /menu → Задания чтобы выполнить его."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error sending message to child: {e}")
+        
+        kb = [
+            [InlineKeyboardButton("📝 Дать ещё задание", callback_data=f"assign_to_{target_uid}")],
+            [InlineKeyboardButton("🎮 В главное меню", callback_data="menu")],
+        ]
+        
+        await query.edit_message_text(
+            f"✅ *Задание из шаблона назначено!*\n\n"
+            f"👤 {target_user['name']}\n"
+            f"📋 {tmpl['name']}\n"
+            f"{attr['emoji']} Атрибут: {attr['name']}\n"
+            f"{diff['emoji']} Сложность: {diff['name']}\n"
+            f"🌟 +{diff['stars']} звёзд при выполнении\n"
+            f"⏰ Срок: {task['deadline']}",
+            reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
         return
@@ -957,11 +1090,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if task.get("done_date") == today:
             await query.answer("Уже выполнено сегодня ✅", show_alert=True)
             return
+        
+        deadline = task.get("deadline", today)
+        if today > deadline:
+            await query.answer("⏰ Срок выполнения истёк!", show_alert=True)
+            return
+        
         task["done"] = True
         task["done_date"] = today
         xp = task.get("xp_gain", 30)
         attr_key = task["attr"]
+        stars_earned = task.get("stars_reward", 1)
+        
         user["attrs"][attr_key] = user["attrs"].get(attr_key, 0) + task.get("attr_gain", 2)
+        user["stars"] = user.get("stars", 0) + stars_earned
         update_streak(user)
         leveled = add_xp(user, xp)
         boss_msg = await apply_boss_damage(uid, attr_key, user, users, query)
@@ -970,14 +1112,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         assigner_uid = task.get("assigned_by")
         if assigner_uid:
             try:
-                assigner = users.get(assigner_uid)
-                assigner_name = assigner["name"] if assigner else "Родитель"
                 await query.get_bot().send_message(
                     chat_id=int(assigner_uid),
                     text=(
-                        f"🧒 *{user['name']}* выполнил ваше задание!\n\n"
-                        f"✅ {task['name']}\n"
-                        f"{ATTRS[attr_key]['emoji']} {ATTRS[attr_key]['name']} +{task.get('attr_gain', 2)}"
+                        f"✅ *{user['name']}* выполнил ваше задание!\n\n"
+                        f"📋 {task['name']}\n"
+                        f"{ATTRS[attr_key]['emoji']} {ATTRS[attr_key]['name']} +{task.get('attr_gain', 2)}\n"
+                        f"🌟 +{stars_earned} звёзд (всего: {user.get('stars', 0)})"
                     ),
                     parse_mode="Markdown"
                 )
@@ -985,11 +1126,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error notifying parent: {e}")
 
         attr = ATTRS[attr_key]
+        deadline_bonus = ""
+        if deadline == today:
+            deadline_bonus = "\n⚡ *Бонус за выполнение день в день!*"
+        
         msg = (
             f"✅ *{task['name']}*\n"
             f"_(задание от {task.get('assigned_by_name', 'Родителя')})_\n\n"
             f"{attr['emoji']} {attr['name']} +{task.get('attr_gain', 2)} · ⭐ +{xp} опыта\n"
+            f"🌟 +{stars_earned} звёзд (всего: {user.get('stars', 0)})\n"
             f"🔥 Стрик: {user['streak']} дн."
+            f"{deadline_bonus}"
             f"{boss_msg}"
         )
         if leveled:
@@ -997,7 +1144,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             msg += f"\n\n🎉 *Уровень {user['level']}!*"
             if gear:
                 msg += f"\nПолучено: {gear}"
-        kb = [[InlineKeyboardButton("◀️ К заданиям", callback_data="tasks")]]
+        
+        kb = [
+            [InlineKeyboardButton("◀️ К заданиям", callback_data="tasks")],
+            [InlineKeyboardButton("🌟 Магазин наград", callback_data="reward_shop")],
+        ]
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         return
 
@@ -1006,6 +1157,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         attr_key = data.replace("aattr_", "")
         target_uid = ctx.user_data.get("assign_target_uid")
         task_name = ctx.user_data.get("temp_assign_task_name", "Задание")
+        diff_key = ctx.user_data.get("task_difficulty", "medium")
+        diff = TASK_DIFFICULTY.get(diff_key, TASK_DIFFICULTY["medium"])
+        
         if not target_uid or target_uid not in users:
             await query.edit_message_text("Ошибка. Попробуй снова из меню заданий.")
             return
@@ -1013,23 +1167,78 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if user.get("role") != "parent":
             await query.edit_message_text("Только родители могут давать задания!")
             return
-            
+        
+        ctx.user_data["temp_task_attr"] = attr_key
+        ctx.user_data["awaiting_deadline"] = True
+        
+        kb = [
+            [InlineKeyboardButton("Сегодня", callback_data="deadline_0")],
+            [InlineKeyboardButton("Завтра", callback_data="deadline_1")],
+            [InlineKeyboardButton("3 дня", callback_data="deadline_3")],
+            [InlineKeyboardButton("Неделя", callback_data="deadline_7")],
+        ]
+        
         target_user = users[target_uid]
+        await query.edit_message_text(
+            f"⏰ *Срок выполнения*\n\n"
+            f"Задание: {task_name}\n"
+            f"Атрибут: {ATTRS[attr_key]['emoji']} {ATTRS[attr_key]['name']}\n"
+            f"Сложность: {diff['emoji']} {diff['name']}\n\n"
+            f"Когда нужно выполнить?",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
+    # --- Выбор дедлайна ---
+    if data.startswith("deadline_"):
+        days = int(data.replace("deadline_", ""))
+        target_uid = ctx.user_data.get("assign_target_uid")
+        task_name = ctx.user_data.get("temp_assign_task_name", "Задание")
+        attr_key = ctx.user_data.get("temp_task_attr", "wil")
+        diff_key = ctx.user_data.get("task_difficulty", "medium")
+        diff = TASK_DIFFICULTY.get(diff_key, TASK_DIFFICULTY["medium"])
+        
+        if not target_uid or target_uid not in users:
+            await query.edit_message_text("Ошибка. Попробуй снова из меню заданий.")
+            return
+        
+        target_user = users[target_uid]
+        deadline = str(date.today() + timedelta(days=days)) if days > 0 else str(date.today())
+        
         task = {
             "id": str(uuid.uuid4())[:8],
             "name": task_name,
             "attr": attr_key,
-            "xp_gain": 30,
-            "attr_gain": 2,
+            "xp_gain": diff["xp"],
+            "attr_gain": diff["attr"],
+            "stars_reward": diff["stars"],
             "done": False,
             "done_date": "",
+            "deadline": deadline,
+            "difficulty": diff_key,
             "assigned_by": uid,
             "assigned_by_name": user["name"],
+            "created_date": str(date.today()),
         }
         target_user.setdefault("assigned_tasks", []).append(task)
+        
+        template = {
+            "name": task_name,
+            "attr": attr_key,
+            "difficulty": diff_key,
+            "deadline_days": days,
+        }
+        if template not in user.get("task_templates", []):
+            user.setdefault("task_templates", []).append(template)
+        
         save_users(users)
+        
         ctx.user_data["temp_assign_task_name"] = None
+        ctx.user_data["temp_task_attr"] = None
+        ctx.user_data["task_difficulty"] = None
         ctx.user_data["assign_target_uid"] = None
+        
         attr = ATTRS[attr_key]
         
         try:
@@ -1039,7 +1248,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"👨‍👦 *{user['name']}* назначил тебе задание!\n\n"
                     f"📋 *{task_name}*\n"
                     f"{attr['emoji']} {attr['name']}\n"
-                    f"⭐ +{task['xp_gain']} опыта\n\n"
+                    f"{diff['emoji']} +{diff['xp']} XP | +{diff['stars']}🌟\n"
+                    f"⏰ Выполнить до: {deadline}\n\n"
                     f"Открой /menu → Задания чтобы выполнить его."
                 ),
                 parse_mode="Markdown"
@@ -1049,18 +1259,101 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         kb = [
             [InlineKeyboardButton("📝 Дать ещё задание", callback_data=f"assign_to_{target_uid}")],
-            [InlineKeyboardButton("👁 Смотреть задания", callback_data=f"view_member_{target_uid}")],
+            [InlineKeyboardButton("🌟 Магазин наград", callback_data="reward_shop")],
             [InlineKeyboardButton("🎮 В главное меню", callback_data="menu")],
         ]
-            
+        
         await query.edit_message_text(
             f"✅ *Задание назначено!*\n\n"
             f"👤 {target_user['name']}\n"
             f"📋 {task_name}\n"
             f"{attr['emoji']} Атрибут: {attr['name']}\n"
-            f"⭐ +{task['xp_gain']} опыта при выполнении\n\n"
-            f"Ребенок получил уведомление о новом задании.",
+            f"{diff['emoji']} Сложность: {diff['name']}\n"
+            f"🌟 +{diff['stars']} звёзд при выполнении\n"
+            f"⏰ Срок: {deadline}\n\n"
+            f"📋 Сохранено в шаблоны!",
             reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
+    # --- Магазин наград ---
+    if data == "reward_shop":
+        stars = user.get("stars", 0)
+        
+        kb = []
+        for reward_id, reward in REWARDS_SHOP.items():
+            can_buy = "✅" if stars >= reward["cost"] else "🔒"
+            kb.append([InlineKeyboardButton(
+                f"{can_buy} {reward['name']} — {reward['cost']}🌟",
+                callback_data=f"buy_{reward_id}"
+            )])
+        
+        kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="menu")])
+        
+        await query.edit_message_text(
+            f"🌟 *Магазин наград*\n\n"
+            f"Ваши звёзды: {stars}🌟\n\n"
+            f"*Доступные награды:*\n"
+            f"_(Выполняйте задания родителей, чтобы получать звёзды)_",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
+    # --- Покупка награды ---
+    if data.startswith("buy_"):
+        reward_id = data.replace("buy_", "")
+        reward = REWARDS_SHOP.get(reward_id)
+        
+        if not reward:
+            await query.answer("Награда не найдена", show_alert=True)
+            return
+        
+        stars = user.get("stars", 0)
+        if stars < reward["cost"]:
+            await query.answer(f"Недостаточно звёзд! Нужно {reward['cost']}🌟", show_alert=True)
+            return
+        
+        user["stars"] = stars - reward["cost"]
+        user.setdefault("reward_history", []).append({
+            "name": reward["name"],
+            "cost": reward["cost"],
+            "date": str(date.today()),
+        })
+        save_users(users)
+        
+        squad_id = user.get("squad_id")
+        if squad_id:
+            squads = load_squads()
+            squad = squads.get(squad_id, {})
+            for mid in squad.get("members", []):
+                m = users.get(mid)
+                if m and m.get("role") == "parent":
+                    try:
+                        await query.get_bot().send_message(
+                            chat_id=int(mid),
+                            text=(
+                                f"🌟 *{user['name']}* хочет получить награду!\n\n"
+                                f"🎁 {reward['name']}\n"
+                                f"Стоимость: {reward['cost']}🌟\n\n"
+                                f"Не забудьте выдать награду!"
+                            ),
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.error(f"Error notifying parent about reward: {e}")
+        
+        await query.edit_message_text(
+            f"🎉 *Награда куплена!*\n\n"
+            f"🎁 {reward['name']}\n"
+            f"🌟 Потрачено: {reward['cost']} звёзд\n"
+            f"Осталось: {user.get('stars', 0)}🌟\n\n"
+            f"Родитель получил уведомление. Ожидайте награду!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ В магазин", callback_data="reward_shop")],
+                [InlineKeyboardButton("🎮 В меню", callback_data="menu")],
+            ]),
             parse_mode="Markdown"
         )
         return
@@ -1116,7 +1409,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for t in assigned:
                 status = "✅" if t.get("done_date") == today else "◻️"
                 a = ATTRS[t["attr"]]
-                task_lines += f"{status} {t['name']} {a['emoji']} 👨👦\n"
+                deadline = t.get("deadline", "")
+                deadline_info = ""
+                if deadline and t.get("done_date") != today:
+                    days_left = (date.fromisoformat(deadline) - date.today()).days
+                    if days_left <= 0:
+                        deadline_info = " ⏰"
+                    else:
+                        deadline_info = f" 📅{days_left}дн"
+                task_lines += f"{status} {t['name']} {a['emoji']} 👨👦{deadline_info}\n"
 
         kb = []
         if user.get("role") == "parent" and target_role == "child":
@@ -1131,6 +1432,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         await query.edit_message_text(
             f"{cls['emoji']} *{target_user['name']}* — Ур.{target_user['level']} ({role_label})\n"
+            f"🌟 Звёзды: {target_user.get('stars', 0)}\n"
             f"🔥 Стрик: {target_user.get('streak', 0)} дн.\n\n"
             f"*Задания сегодня:*\n"
             f"{summary}\n\n"
@@ -1267,7 +1569,7 @@ async def show_squad_menu(query, uid, squad_id):
             asgn_done = len([t for t in m.get("assigned_tasks", []) if t.get("done_date") == today])
             asgn_total = len(m.get("assigned_tasks", []))
             members_text += (
-                f"{cls['emoji']} *{m['name']}* — Ур.{m['level']} · {role_label} · 🔥{m.get('streak',0)}\n"
+                f"{cls['emoji']} *{m['name']}* — Ур.{m['level']} · {role_label} · 🔥{m.get('streak',0)} · 🌟{m.get('stars', 0)}\n"
                 f"  ✅ {own_done}/{own_total} · 👨👦 {asgn_done}/{asgn_total}\n\n"
             )
             
@@ -1332,8 +1634,20 @@ async def show_tasks_menu(query, uid):
             a = ATTRS[t["attr"]]
             status = "✅" if is_done else "◻️"
             bonus = " ⚡" if weak_attr and t["attr"] == weak_attr else ""
+            
+            deadline = t.get("deadline", "")
+            deadline_info = ""
+            if deadline and not is_done:
+                days_left = (date.fromisoformat(deadline) - date.today()).days
+                if days_left <= 0:
+                    deadline_info = " ⏰"
+                elif days_left == 1:
+                    deadline_info = " 📅завтра"
+                else:
+                    deadline_info = f" 📅{days_left}дн"
+            
             kb.append([InlineKeyboardButton(
-                f"{status} {t['name']} {a['emoji']}{bonus}",
+                f"{status} {t['name']} {a['emoji']}{bonus}{deadline_info}",
                 callback_data=f"adone_{t['id']}"
             )])
 
