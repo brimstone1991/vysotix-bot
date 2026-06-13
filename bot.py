@@ -552,6 +552,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if args and args[0].isalnum() and len(args[0]) == 6:
         ctx.user_data["pending_squad_code"] = args[0]
     
+    ctx.user_data.clear()
     ctx.user_data["step"] = "choose_role"
     kb = [
         [InlineKeyboardButton("Родитель 👨‍👩‍👧‍👦", callback_data="role_parent")],
@@ -582,26 +583,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"handle_text: uid={uid}, step={step}, text={text}")
 
-    if step == "name":
-        if len(text) < 2 or len(text) > 20:
-            await update.message.reply_text("Имя должно быть от 2 до 20 символов:")
-            return
-        ctx.user_data["temp_name"] = text
-        
-        ctx.user_data["step"] = "class"
-        kb = [[InlineKeyboardButton(f"{v['emoji']} {v['name']}", callback_data=f"class_{k}")]
-              for k, v in CLASSES.items() if k != "parent"]
-        await update.message.reply_text(
-            f"Отлично, *{text}*! Выбери класс героя:",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
-        )
-        return
-
+    # ВАЖНО: проверки step должны быть ПЕРВЫМИ
     if step == "squad_name":
         logger.info(f"Creating squad with name: {text}")
         if len(text) < 2:
-            await update.message.reply_text("Название слишком короткое:")
+            await update.message.reply_text("Название слишком короткое. Придумай название подлиннее:")
             return
         
         squad_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
@@ -615,6 +601,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if uid not in users:
             logger.error(f"User {uid} not found in users!")
             await update.message.reply_text("Ошибка: сначала создай героя с помощью /start")
+            ctx.user_data.clear()
             return
         
         users[uid]["squad_id"] = squad_id
@@ -668,7 +655,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔁 Попробовать снова", callback_data="join_squad_by_code")],
-                [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")]
+                [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")]
             ])
             await update.message.reply_text(
                 f"❌ Отряд с кодом `{code}` не найден.\n\nПроверь код или создай новый отряд.",
@@ -677,6 +664,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    if step == "name":
+        if len(text) < 2 or len(text) > 20:
+            await update.message.reply_text("Имя должно быть от 2 до 20 символов:")
+            return
+        ctx.user_data["temp_name"] = text
+        ctx.user_data["step"] = "class"
+        kb = [[InlineKeyboardButton(f"{v['emoji']} {v['name']}", callback_data=f"class_{k}")]
+              for k, v in CLASSES.items() if k != "parent"]
+        await update.message.reply_text(
+            f"Отлично, *{text}*! Выбери класс героя:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
+    # Затем проверки awaiting_ состояний
     if ctx.user_data.get("awaiting_task_name"):
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
@@ -798,6 +801,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         ctx.user_data.pop("temp_name", None)
         ctx.user_data.pop("temp_role", None)
+        ctx.user_data.pop("step", None)
         
         kb = [
             [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")],
@@ -814,7 +818,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # --- Создать отряд после создания героя ---
     if data == "create_squad_after_hero":
-        logger.info(f"Creating squad after hero for user {uid}")
+        logger.info(f"create_squad_after_hero: setting step=squad_name for user {uid}")
+        ctx.user_data.clear()
         ctx.user_data["step"] = "squad_name"
         await query.edit_message_text(
             "🏰 Придумай название отряда и напиши его:\n\n"
@@ -825,6 +830,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     # --- Вступить в отряд по коду ---
     if data == "join_squad_by_code":
+        ctx.user_data.clear()
         ctx.user_data["step"] = "enter_squad_code"
         await query.edit_message_text(
             "🔑 Введи 6-значный код отряда:\n\n"
@@ -857,6 +863,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "add_task":
+        ctx.user_data.clear()
         ctx.user_data["awaiting_task_name"] = True
         await query.edit_message_text(
             "➕ *Новое задание*\n\nВведи название задания:",
@@ -878,7 +885,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         }
         user.setdefault("tasks", []).append(task)
         save_users(users)
-        ctx.user_data["temp_task_name"] = None
+        ctx.user_data.pop("temp_task_name", None)
+        ctx.user_data.pop("awaiting_task_name", None)
         await show_tasks_menu(query, uid)
         return
 
@@ -1364,6 +1372,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "create_squad":
+        logger.info(f"create_squad: setting step=squad_name for user {uid}")
+        ctx.user_data.clear()
         ctx.user_data["step"] = "squad_name"
         await query.edit_message_text(
             "🏰 Придумай название отряда и напиши его:\n\n"
