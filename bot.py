@@ -120,7 +120,21 @@ def load_users():
     if not os.path.exists(DATA_FILE):
         return {}
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        users = json.load(f)
+    
+    # Миграция старых данных
+    for uid, user in users.items():
+        user.setdefault("stars", 0)
+        user.setdefault("reward_history", [])
+        user.setdefault("task_templates", [])
+        user.setdefault("notify_time", None)
+        for task in user.get("assigned_tasks", []):
+            task.setdefault("stars_reward", 1)
+            task.setdefault("deadline", "")
+            task.setdefault("difficulty", "medium")
+            task.setdefault("created_date", "")
+    
+    return users
 
 def save_users(users):
     os.makedirs("data", exist_ok=True)
@@ -739,7 +753,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["temp_role"] = "parent"
         ctx.user_data["step"] = "name"
         await query.edit_message_text("Как вас зовут? (Имя родителя):")
-        return    if data == "role_child":
+        return
+        
+    if data == "role_child":
         ctx.user_data["temp_role"] = "child"
         ctx.user_data["step"] = "name"
         await query.edit_message_text("Как зовут твоего героя? (Имя ребенка):")
