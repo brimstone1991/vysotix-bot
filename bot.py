@@ -396,7 +396,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         users = load_users()
         if uid in users:
             users[uid]["squad_id"] = squad_id
-            users[uid]["role"] = "parent"   # создатель отряда – родитель
+            users[uid]["role"] = "parent"
             save_users(users)
         ctx.user_data["step"] = None
         await update.message.reply_text(
@@ -409,7 +409,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Вступление в отряд
     if ctx.user_data.get("awaiting_squad_code"):
         squad_code = text.upper()
         squads = load_squads()
@@ -438,7 +437,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_squad_code"] = False
         return
 
-    # Добавление своего задания
     if ctx.user_data.get("awaiting_task_name"):
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
@@ -452,7 +450,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Название задания для ребёнка
     if ctx.user_data.get("awaiting_assign_task_name"):
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
@@ -504,7 +501,7 @@ async def show_tasks_menu(query, uid):
             status = "✅" if is_done else "◻️"
             bonus = " ⚡" if weak_attr and t["attr"] == weak_attr else ""
             parent = t.get("assigned_by_name", "родитель")
-            kb.append([InlineKeyboardButton(f"{status} {t['name']} {a['emoji']}{bonus} (от {parent})", callback_data=f"adone_{t['id']}")]))
+            kb.append([InlineKeyboardButton(f"{status} {t['name']} {a['emoji']}{bonus} (от {parent})", callback_data=f"adone_{t['id']}")])
 
     if not own_tasks and not assigned_tasks:
         kb.append([InlineKeyboardButton("➕ Добавить задание", callback_data="add_task")])
@@ -542,14 +539,12 @@ async def show_squad_menu(query, uid, squad_id):
         if pending:
             members_text += f" 📋{pending}"
         members_text += "\n"
-        # Кнопка "Дать задание" для каждого, кроме себя, только если текущий пользователь — родитель
         if mid != uid and is_parent:
             kb.append([InlineKeyboardButton(f"📝 Дать задание {m['name']}", callback_data=f"assign_to_{mid}")])
 
-    # Кнопка смены ролей (только для создателя)
+    # Кнопки смены ролей (только для создателя)
     creator_id = squad.get("creator")
     if creator_id == uid:
-        # Добавляем кнопки смены ролей для каждого участника (кроме себя)
         for mid in squad.get("members", []):
             if mid == uid: continue
             m = users.get(mid)
@@ -581,7 +576,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     users = load_users()
     user = users.get(uid)
 
-    # Меню
     if data == "menu":
         if uid in users:
             reset_daily_tasks(users[uid])
@@ -589,11 +583,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_menu(query, uid, edit=True)
         return
 
-    # Выбор класса
     if data.startswith("class_"):
         cls_key = data.replace("class_", "")
         name = ctx.user_data.get("temp_name", "Герой")
-        users[uid] = new_user(name, cls_key, "child")  # по умолчанию ребёнок
+        users[uid] = new_user(name, cls_key, "child")
         pending = ctx.user_data.get("pending_squad")
         if pending:
             squads = load_squads()
@@ -620,7 +613,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Сначала создай героя: /start")
         return
 
-    # Профиль
     if data == "profile":
         reset_daily_tasks(user)
         save_users(users)
@@ -628,7 +620,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(char_card(user), reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         return
 
-    # Задания
     if data == "tasks":
         reset_daily_tasks(user)
         save_users(users)
@@ -659,7 +650,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_tasks_menu(query, uid)
         return
 
-    # Выполнить своё задание
     if data.startswith("done_"):
         task_id = data.replace("done_", "")
         today = str(date.today())
@@ -711,7 +701,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_tasks_menu(query, uid)
         return
 
-    # Выполнить задание от родителя
     if data.startswith("adone_"):
         task_id = data.replace("adone_", "")
         today = str(date.today())
@@ -753,7 +742,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 save_bosses(bosses)
         save_users(users)
 
-        # Уведомить родителя
         if task.get("assigned_by"):
             try:
                 await query.get_bot().send_message(
@@ -775,7 +763,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_tasks_menu(query, uid)
         return
 
-    # Отряд
     if data == "squad":
         squad_id = user.get("squad_id")
         squads = load_squads()
@@ -800,9 +787,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔗 *Вступление в отряд*\n\nВведи код отряда (6 символов):", parse_mode="Markdown")
         return
 
-    # Дать задание
     if data.startswith("assign_to_"):
-        # Проверка, что пользователь — родитель
         if user.get("role") != "parent":
             await query.answer("❌ Только родители могут давать задания!", show_alert=True)
             return
@@ -822,7 +807,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Выбор атрибута для задания ребёнку
     if data.startswith("assign_attr_"):
         attr_key = data.replace("assign_attr_", "")
         target_uid = ctx.user_data.get("assign_target_uid")
@@ -848,7 +832,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["temp_assign_task_name"] = None
         ctx.user_data["assign_target_uid"] = None
 
-        # Уведомить ребёнка
         try:
             await query.get_bot().send_message(
                 chat_id=int(target_uid),
@@ -867,7 +850,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Смена ролей (только для создателя отряда)
     if data.startswith("set_role_parent_"):
         target_uid = data.replace("set_role_parent_", "")
         squad_id = user.get("squad_id")
@@ -900,7 +882,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer("Только создатель отряда может менять роли!", show_alert=True)
         return
 
-    # Босс
     if data == "boss":
         squad_id = user.get("squad_id")
         if not squad_id:
