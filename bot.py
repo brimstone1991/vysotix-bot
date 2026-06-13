@@ -143,7 +143,7 @@ def new_user(name, cls_key):
         "streak": 0,
         "last_done_date": "",
         "tasks": [],
-        "assigned_tasks": [],   # задания назначенные этому пользователю другими
+        "assigned_tasks": [],
         "gear": [],
         "squad_id": None,
     }
@@ -320,7 +320,6 @@ async def show_menu(target, uid, edit=False):
             pct = int(boss["hp"] / boss["hp_max"] * 100)
             boss_line = f"\n⚔️ Рейд: {phase_name} — {pct}% HP"
 
-    # Уведомление о назначенных заданиях
     assigned_line = ""
     if total_assigned > 0:
         pending = total_assigned - done_assigned
@@ -377,6 +376,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_menu(update, uid)
         return
 
+    if args and args[0].isalnum() and len(args[0]) == 6:
+        ctx.user_data["pending_squad_code"] = args[0]
+    
     ctx.user_data["step"] = "name"
     await update.message.reply_text(
         "⚔️ *Добро пожаловать в Vysotix!*\n\n"
@@ -430,13 +432,55 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         bot_me = await ctx.bot.get_me()
         link = f"https://t.me/{bot_me.username}?start=squad_{squad_id}"
         ctx.user_data["step"] = None
+        
+        from_hero = ctx.user_data.get("from_hero_creation", False)
+        ctx.user_data["from_hero_creation"] = False
+        
         await update.message.reply_text(
             f"🏰 *Отряд «{text}» создан!*\n\n"
-            f"Код: `{squad_id}`\n\n"
-            f"🔗 Ссылка для сына:\n{link}",
+            f"🔑 Код для вступления: `{squad_id}`\n\n"
+            f"🔗 Ссылка-приглашение:\n{link}\n\n"
+            f"*Дай этот код друзьям, чтобы они вступили!*",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 В меню", callback_data="menu")]]),
             parse_mode="Markdown"
         )
+        return
+
+    if step == "enter_squad_code":
+        code = text.strip().upper()
+        if len(code) != 6 or not code.isalnum():
+            await update.message.reply_text(
+                "❌ Код должен быть 6 символов (буквы и цифры).\n\nПопробуй ещё раз:"
+            )
+            return
+        ctx.user_data["temp_squad_code"] = code
+        squads = load_squads()
+        if code in squads:
+            users = load_users()
+            if uid in users:
+                users[uid]["squad_id"] = code
+                if uid not in squads[code]["members"]:
+                    squads[code]["members"].append(uid)
+                save_users(users)
+                save_squads(squads)
+                ctx.user_data["step"] = None
+                await update.message.reply_text(
+                    f"✅ Ты вступил в отряд *{squads[code]['name']}*!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 В меню", callback_data="menu")]]),
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("Ошибка: герой не найден. Используй /start")
+        else:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔁 Попробовать снова", callback_data="join_squad_by_code")],
+                [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")]
+            ])
+            await update.message.reply_text(
+                f"❌ Отряд с кодом `{code}` не найден.\n\nПроверь код или создай новый отряд.",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
         return
 
     if ctx.user_data.get("awaiting_task_name"):
@@ -453,7 +497,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Название задания для участника отряда
     if ctx.user_data.get("awaiting_assign_task_name"):
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
@@ -491,22 +534,53 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cls_key = data.replace("class_", "")
         name = ctx.user_data.get("temp_name", "Герой")
         users[uid] = new_user(name, cls_key)
-        pending = ctx.user_data.get("pending_squad")
-        if pending:
+        
+        pending_code = ctx.user_data.get("pending_squad_code")
+        if pending_code:
             squads = load_squads()
-            if pending in squads:
-                users[uid]["squad_id"] = pending
-                if uid not in squads[pending]["members"]:
-                    squads[pending]["members"].append(uid)
+            if pending_code in squads:
+                users[uid]["squad_id"] = pending_code
+                if uid not in squads[pending_code]["members"]:
+                    squads[pending_code]["members"].append(uid)
                 save_squads(squads)
-            ctx.user_data["pending_squad"] = None
-        save_users(users)
-        cls = CLASSES[cls_key]
-        ctx.user_data["step"] = "squad_name"
+                ctx.user_data["pending_squad_code"] = None
+                await query.edit_message_text(
+                    f"{CLASSES[cls_key]['emoji']} Герой *{name}* ({CLASSES[cls_key]['name']}) создан!\n\n"
+                    f"✅ Ты вступил в отряд *{squads[pending_code]['name']}*!\n\n"
+                    f"🏰 В меню: /menu",
+                    parse_mode="Markdown"
+                )
+                ctx.user_data["step"] = None
+                return
+        
+        ctx.user_data["step"] = "post_hero_choice"
+        ctx.user_data["temp_name"] = name
+        ctx.user_data["temp_class"] = cls_key
+        kb = [
+            [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")],
+            [InlineKeyboardButton("🔑 Вступить по коду", callback_data="join_squad_by_code")],
+        ]
         await query.edit_message_text(
-            f"{cls['emoji']} Герой *{name}* ({cls['name']}) создан!\n\n"
-            f"Теперь создай семейный отряд.\n\nКак назовёшь отряд?",
+            f"{CLASSES[cls_key]['emoji']} Герой *{name}* ({CLASSES[cls_key]['name']}) создан!\n\n"
+            f"Теперь выбери действие:",
+            reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
+        )
+        return
+
+    # --- Создать отряд после создания героя ---
+    if data == "create_squad_after_hero":
+        ctx.user_data["step"] = "squad_name"
+        ctx.user_data["from_hero_creation"] = True
+        await query.edit_message_text("🏰 Придумай название отряда и напиши его:")
+        return
+    
+    # --- Вступить в отряд по коду ---
+    if data == "join_squad_by_code":
+        ctx.user_data["step"] = "enter_squad_code"
+        await query.edit_message_text(
+            "🔑 Введи 6-значный код отряда:\n\n"
+            "*(код можно найти в разделе отряда у создателя)*"
         )
         return
 
@@ -616,7 +690,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         boss_msg = await apply_boss_damage(uid, attr_key, user, users, query)
         save_users(users)
 
-        # Уведомляем назначившего
         assigner_uid = task.get("assigned_by")
         if assigner_uid:
             try:
@@ -658,10 +731,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not squad_id or squad_id not in squads:
             kb = [
                 [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")],
+                [InlineKeyboardButton("🔑 Вступить по коду", callback_data="join_squad_by_code")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="menu")],
             ]
             await query.edit_message_text(
-                "🏰 У тебя пока нет отряда.\n\nСоздай свой!",
+                "🏰 У тебя пока нет отряда.\n\nСоздай свой или вступи по коду:",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
             return
@@ -670,6 +744,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "create_squad":
         ctx.user_data["step"] = "squad_name"
+        ctx.user_data["from_hero_creation"] = False
         await query.edit_message_text("🏰 Придумай название отряда и напиши его:")
         return
 
@@ -717,7 +792,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏰 В отряд", callback_data="squad")],
             [InlineKeyboardButton("🎮 В меню", callback_data="menu")],
         ]
-        # Уведомляем получателя
         try:
             await query.get_bot().send_message(
                 chat_id=int(target_uid),
@@ -840,7 +914,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
 
 async def apply_boss_damage(uid, attr_key, user, users, query):
-    """Наносит урон боссу и возвращает текст для сообщения."""
     squad_id = user.get("squad_id")
     if not squad_id:
         return ""
@@ -901,7 +974,7 @@ async def show_squad_menu(query, uid, squad_id):
     kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
 
     await query.edit_message_text(
-        f"🏰 *{squad['name']}*\n\n{members_text}\n🔗 Пригласить:\n`{link}`",
+        f"🏰 *{squad['name']}*\n\n{members_text}\n🔗 Пригласить:\n`{link}`\n\n🔑 Код для вступления: `{squad_id}`",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown"
     )
@@ -925,7 +998,6 @@ async def show_tasks_menu(query, uid):
 
     kb = []
 
-    # Свои задания
     if own_tasks:
         for t in own_tasks:
             is_done = t.get("done_date") == today
@@ -937,7 +1009,6 @@ async def show_tasks_menu(query, uid):
                 callback_data=f"done_{t['id']}"
             )])
 
-    # Назначенные задания
     if assigned_tasks:
         kb.append([InlineKeyboardButton("── 👨‍👦 От отряда ──", callback_data="noop")])
         for t in assigned_tasks:
