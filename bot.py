@@ -43,7 +43,7 @@ CLASSES = {
 ATTRS = {
     "str": {"name": "Сила",      "emoji": "💪", "hint": "тренировки, спорт"},
     "int": {"name": "Интеллект", "emoji": "📚", "hint": "чтение, учёба"},
-    "hp":  {"name": "Здоровье",  "emoji": "❤️", "hint": "сон, питание, regime"},
+    "hp":  {"name": "Здоровье",  "emoji": "❤️", "hint": "сон, питание, режим"},
     "agi": {"name": "Ловкость",  "emoji": "🤸", "hint": "растяжка, координация"},
     "wil": {"name": "Воля",      "emoji": "🔥", "hint": "сложные привычки"},
 }
@@ -265,11 +265,6 @@ def boss_card(boss, squad_id, users_data, squad_members):
 # ========== КАРТОЧКА ГЕРОЯ ==========
 
 def char_card(user):
-    if user.get("role") == "parent":
-        return (
-            f"👨‍👩‍👧‍👦 *{user['name']}* — Родитель\n\n"
-            f"Вы управляете семейным отрядом и координируете выполнение заданий детьми."
-        )
     cls = CLASSES.get(user["class"], CLASSES["warrior"])
     lvl = user["level"]
     xp = user["xp"]
@@ -285,19 +280,24 @@ def char_card(user):
     gear_text = "\n".join(f"  {g}" for g in user["gear"]) if user["gear"] else "  пока нет"
     today = str(date.today())
     done_today = len([t for t in user.get("tasks", []) if t.get("done_date") == today])
-    done_assigned = len([t for t in user.get("assigned_tasks", []) if t.get("done_date") == today])
     total = len(user.get("tasks", []))
-    total_assigned = len(user.get("assigned_tasks", []))
-    return (
-        f"{cls['emoji']} *{user['name']}* — {cls['name']}\n"
+    
+    role_label = "Родитель 👨‍👩‍👧‍👦" if user.get("role") == "parent" else "Ребенок 🧒"
+    
+    card = (
+        f"{cls['emoji']} *{user['name']}* — {cls['name']} ({role_label})\n"
         f"⭐ Уровень {lvl}   🔥 Стрик {user.get('streak', 0)} дн.\n"
         f"Опыт: {xp} / {xp_max}\n"
         f"`{bar}`\n\n"
         f"*Атрибуты:*\n`{attrs_lines}`\n"
         f"*Снаряжение:*\n{gear_text}\n\n"
         f"✅ Свои задания: {done_today}/{total}\n"
-        f"👨👦 От родителей: {done_assigned}/{total_assigned}"
     )
+    if user.get("role") != "parent":
+        done_assigned = len([t for t in user.get("assigned_tasks", []) if t.get("done_date") == today])
+        total_assigned = len(user.get("assigned_tasks", []))
+        card += f"👨👦 От родителей: {done_assigned}/{total_assigned}"
+    return card
 
 # ========== ГЛАВНОЕ МЕНЮ ==========
 
@@ -315,6 +315,11 @@ async def show_menu(target, uid, edit=False):
     role = user.get("role", "child")
 
     if role == "parent":
+        cls = CLASSES.get(user["class"], CLASSES["warrior"])
+        today = str(date.today())
+        done_today = len([t for t in user.get("tasks", []) if t.get("done_date") == today])
+        total = len(user.get("tasks", []))
+        
         squad_id = user.get("squad_id")
         squads = load_squads()
         squad_name = squads.get(squad_id, {}).get("name", "Нет отряда") if squad_id else "Нет отряда"
@@ -322,23 +327,22 @@ async def show_menu(target, uid, edit=False):
         children_info = ""
         if squad_id and squad_id in squads:
             squad = squads[squad_id]
-            today = str(date.today())
             for mid in squad.get("members", []):
                 if mid == uid:
                     continue
                 m = users.get(mid)
                 if m and m.get("role") == "child":
                     m_cls = CLASSES.get(m["class"], {"emoji": "🧒", "name": "Ребенок"})
-                    done_today = len([t for t in m.get("tasks", []) if t.get("done_date") == today])
-                    done_assigned = len([t for t in m.get("assigned_tasks", []) if t.get("done_date") == today])
-                    total = len(m.get("tasks", []))
-                    total_assigned = len(m.get("assigned_tasks", []))
+                    m_done_today = len([t for t in m.get("tasks", []) if t.get("done_date") == today])
+                    m_done_assigned = len([t for t in m.get("assigned_tasks", []) if t.get("done_date") == today])
+                    m_total = len(m.get("tasks", []))
+                    m_total_assigned = len(m.get("assigned_tasks", []))
                     children_info += (
-                        f"  {m_cls['emoji']} *{m['name']}* (Ур. {m['level']}):\n"
-                        f"    Свои: {done_today}/{total} | От родителей: {done_assigned}/{total_assigned}\n"
+                        f"  {m_cls['emoji']} *{m['name']}* (Ур. {m['level']}): "
+                        f"свои {m_done_today}/{m_total} | от родителей {m_done_assigned}/{m_total_assigned}\n"
                     )
-        if not children_info:
-            children_info = "  _Детей в отряде пока нет._\n"
+        if children_info:
+            children_info = f"\n*🧒 Дети:*\n{children_info}"
             
         boss_line = ""
         if squad_id:
@@ -349,15 +353,16 @@ async def show_menu(target, uid, edit=False):
                 boss_line = f"\n⚔️ Рейд: {phase_name} — {pct}% HP"
                 
         kb = [
-            [InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-             InlineKeyboardButton("🏰 Семейный отряд", callback_data="squad")],
+            [InlineKeyboardButton("👤 Мой герой", callback_data="profile"),
+             InlineKeyboardButton("📋 Задания", callback_data="tasks")],
+            [InlineKeyboardButton("➕ Добавить задание", callback_data="add_task"),
+             InlineKeyboardButton("🏰 Отряд", callback_data="squad")],
             [InlineKeyboardButton("⚔️ Босс рейд", callback_data="boss")],
         ]
         text = (
-            f"👨‍👩‍👧‍👦 *Родитель {user['name']}*\n"
-            f"🏰 Отряд: *{squad_name}*\n"
-            f"🔑 Код: `{squad_id if squad_id else 'нет'}`\n\n"
-            f"*🧒 Статус детей:*\n{children_info}"
+            f"👨‍👩‍👧‍👦 *Родитель {user['name']}* ({cls['name']}) · Ур. {user['level']} · 🔥 {user.get('streak', 0)}\n"
+            f"✅ Свои задания сегодня: {done_today}/{total}"
+            f"{children_info}"
             f"{boss_line}"
         )
         markup = InlineKeyboardMarkup(kb)
@@ -474,54 +479,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         ctx.user_data["temp_name"] = text
         
-        role = ctx.user_data.get("temp_role", "child")
-        if role == "child":
-            ctx.user_data["step"] = "class"
-            kb = [[InlineKeyboardButton(f"{v['emoji']} {v['name']}", callback_data=f"class_{k}")]
-                  for k, v in CLASSES.items() if k != "parent"]
-            await update.message.reply_text(
-                f"Отлично, *{text}*! Выбери класс героя:",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="Markdown"
-            )
-        else:
-            # Родитель сразу создаётся без класса
-            users = load_users()
-            users[uid] = new_user(text, "parent", role="parent")
-            save_users(users)
-            logger.info(f"User {uid} created as Parent")
-            
-            pending_code = ctx.user_data.get("pending_squad_code")
-            pending_squad = ctx.user_data.get("pending_squad")
-            joined_code = pending_code or pending_squad
-            
-            if joined_code:
-                squads = load_squads()
-                if joined_code in squads:
-                    users[uid]["squad_id"] = joined_code
-                    if uid not in squads[joined_code]["members"]:
-                        squads[joined_code]["members"].append(uid)
-                    save_squads(squads)
-                    save_users(users)
-                    ctx.user_data.clear()
-                    await update.message.reply_text(
-                        f"👨‍👩‍👧‍👦 Родитель *{text}* создан!\n\n"
-                        f"✅ Ты вступил в отряд *{squads[joined_code]['name']}*!",
-                        parse_mode="Markdown"
-                    )
-                    await show_menu(update, uid)
-                    return
-            
-            kb = [
-                [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad_after_hero")],
-                [InlineKeyboardButton("🔑 Вступить по коду", callback_data="join_squad_by_code")],
-            ]
-            await update.message.reply_text(
-                f"👨‍👩‍👧‍👦 Родитель *{text}* создан!\n\n"
-                f"Теперь выберите действие:",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="Markdown"
-            )
+        ctx.user_data["step"] = "class"
+        kb = [[InlineKeyboardButton(f"{v['emoji']} {v['name']}", callback_data=f"class_{k}")]
+              for k, v in CLASSES.items() if k != "parent"]
+        await update.message.reply_text(
+            f"Отлично, *{text}*! Выбери класс героя:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
         return
 
     if step == "squad_name":
@@ -784,9 +749,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "add_task":
-        if user.get("role") == "parent":
-            await query.answer("Родители не имеют своих заданий!", show_alert=True)
-            return
         ctx.user_data["awaiting_task_name"] = True
         await query.edit_message_text(
             "➕ *Новое задание*\n\nВведи название задания:",
@@ -1012,23 +974,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
             
         target_role = target_user.get("role", "child")
-        
-        if target_role == "parent":
-            kb = [[InlineKeyboardButton("◀️ Назад в отряд", callback_data="squad")]]
-            await query.edit_message_text(
-                f"👨‍👩‍👧‍👦 *{target_user['name']}*\n"
-                f"Роль: Родитель\n\n"
-                f"Родители помогают координировать отряд и дают задания детям.",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="Markdown"
-            )
-            return
-            
         today = str(date.today())
         own_tasks = target_user.get("tasks", [])
         assigned = target_user.get("assigned_tasks", [])
         own_done = len([t for t in own_tasks if t.get("done_date") == today])
-        asgn_done = len([t for t in assigned if t.get("done_date") == today])
         cls = CLASSES.get(target_user["class"], CLASSES["warrior"])
 
         task_lines = ""
@@ -1036,21 +985,32 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status = "✅" if t.get("done_date") == today else "◻️"
             a = ATTRS[t["attr"]]
             task_lines += f"{status} {t['name']} {a['emoji']}\n"
-        for t in assigned:
-            status = "✅" if t.get("done_date") == today else "◻️"
-            a = ATTRS[t["attr"]]
-            task_lines += f"{status} {t['name']} {a['emoji']} 👨👦\n"
+            
+        asgn_done = 0
+        if target_role != "parent":
+            asgn_done = len([t for t in assigned if t.get("done_date") == today])
+            for t in assigned:
+                status = "✅" if t.get("done_date") == today else "◻️"
+                a = ATTRS[t["attr"]]
+                task_lines += f"{status} {t['name']} {a['emoji']} 👨👦\n"
 
         kb = []
-        if user.get("role") == "parent":
+        # Только родитель может давать задания ребенку
+        if user.get("role") == "parent" and target_role == "child":
             kb.append([InlineKeyboardButton(f"➕ Дать задание {target_user['name']}", callback_data=f"assign_to_{target_uid}")])
             
         kb.append([InlineKeyboardButton("◀️ Назад в отряд", callback_data="squad")])
+        
+        role_label = "Родитель 👨‍👩‍👧‍👦" if target_role == "parent" else "Ребенок 🧒"
+        summary = f"Свои: {own_done}/{len(own_tasks)}"
+        if target_role != "parent":
+            summary += f" · От родителей: {asgn_done}/{len(assigned)}"
+            
         await query.edit_message_text(
-            f"{cls['emoji']} *{target_user['name']}* — Ур.{target_user['level']}\n"
+            f"{cls['emoji']} *{target_user['name']}* — Ур.{target_user['level']} ({role_label})\n"
             f"🔥 Стрик: {target_user.get('streak', 0)} дн.\n\n"
             f"*Задания сегодня:*\n"
-            f"Свои: {own_done}/{len(own_tasks)} · От родителей: {asgn_done}/{len(assigned)}\n\n"
+            f"{summary}\n\n"
             f"{task_lines if task_lines else 'Нет заданий'}",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
@@ -1084,10 +1044,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         card = boss_card(boss, squad_id, users, squad.get("members", []))
         
-        kb = []
-        if user.get("role") != "parent":
-            kb.append([InlineKeyboardButton("📋 Выполнить задание", callback_data="tasks")])
-        kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
+        kb = [
+            [InlineKeyboardButton("📋 Выполнить задание", callback_data="tasks")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu")]
+        ]
         
         await query.edit_message_text(
             f"⚔️ *Рейд отряда*\n\n{card}",
@@ -1108,10 +1068,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             squad = squads.get(squad_id, {})
             card = boss_card(boss, squad_id, users, squad.get("members", []))
             
-            kb = []
-            if user.get("role") != "parent":
-                kb.append([InlineKeyboardButton("📋 Выполнить задание", callback_data="tasks")])
-            kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
+            kb = [
+                [InlineKeyboardButton("📋 Выполнить задание", callback_data="tasks")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu")]
+            ]
             
             await query.edit_message_text(
                 f"⚔️ *Новый рейд начался!*\n\n{card}",
@@ -1146,7 +1106,7 @@ async def apply_boss_damage(uid, attr_key, user, users, query):
         squad = squads.get(squad_id, {})
         for mid in squad.get("members", []):
             m = users.get(mid)
-            if m and m.get("role") != "parent" and reward not in m.get("gear", []):
+            if m and reward not in m.get("gear", []):
                 m.setdefault("gear", []).append(reward)
         msg += f"\n\n🏆 *БОСС ПОВЕРЖЁН!*\nВесь отряд получает: {reward}"
     save_bosses(bosses)
@@ -1170,13 +1130,17 @@ async def show_squad_menu(query, uid, squad_id):
         
         m_role = m.get("role", "child")
         role_label = "Родитель 👨‍👩‍👧‍👦" if m_role == "parent" else "Ребенок 🧒"
+        cls = CLASSES.get(m["class"], CLASSES["warrior"])
+        
+        own_done = len([t for t in m.get("tasks", []) if t.get("done_date") == today])
+        own_total = len(m.get("tasks", []))
         
         if m_role == "parent":
-            members_text += f"👨‍👩‍👧‍👦 *{m['name']}* — {role_label}\n\n"
+            members_text += (
+                f"{cls['emoji']} *{m['name']}* — Ур.{m['level']} · {role_label} · 🔥{m.get('streak',0)}\n"
+                f"  ✅ {own_done}/{own_total} сегодня\n\n"
+            )
         else:
-            cls = CLASSES.get(m["class"], CLASSES["warrior"])
-            own_done = len([t for t in m.get("tasks", []) if t.get("done_date") == today])
-            own_total = len(m.get("tasks", []))
             asgn_done = len([t for t in m.get("assigned_tasks", []) if t.get("done_date") == today])
             asgn_total = len(m.get("assigned_tasks", []))
             members_text += (
@@ -1185,6 +1149,7 @@ async def show_squad_menu(query, uid, squad_id):
             )
             
         if mid != uid:
+            # Давать задание может только родитель ребенку
             if current_role == "parent" and m_role == "child":
                 kb.append([InlineKeyboardButton(
                     f"👁 {m['name']} · дать задание",
@@ -1209,18 +1174,11 @@ async def show_squad_menu(query, uid, squad_id):
 async def show_tasks_menu(query, uid):
     users = load_users()
     user = users.get(uid)
-    
-    if user.get("role") == "parent":
-        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
-        await query.edit_message_text(
-            "📋 У вас нет личных игровых заданий. Вы можете давать задания детям в меню отряда.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
+    role = user.get("role", "child")
         
     today = str(date.today())
     own_tasks = user.get("tasks", [])
-    assigned_tasks = user.get("assigned_tasks", [])
+    assigned_tasks = user.get("assigned_tasks", []) if role != "parent" else []
 
     squad_id = user.get("squad_id")
     boss_hint = ""
@@ -1245,7 +1203,7 @@ async def show_tasks_menu(query, uid):
                 callback_data=f"done_{t['id']}"
             )])
 
-    if assigned_tasks:
+    if role != "parent" and assigned_tasks:
         kb.append([InlineKeyboardButton("── 👨👦 От родителей ──", callback_data="noop")])
         for t in assigned_tasks:
             is_done = t.get("done_date") == today
@@ -1270,10 +1228,12 @@ async def show_tasks_menu(query, uid):
     kb.append([InlineKeyboardButton("◀️ Назад", callback_data="menu")])
 
     own_done = len([t for t in own_tasks if t.get("done_date") == today])
-    asgn_done = len([t for t in assigned_tasks if t.get("done_date") == today])
     summary = f"📋 *Задания* — свои {own_done}/{len(own_tasks)}"
-    if assigned_tasks:
+    
+    if role != "parent" and assigned_tasks:
+        asgn_done = len([t for t in assigned_tasks if t.get("done_date") == today])
         summary += f" · от родителей {asgn_done}/{len(assigned_tasks)}"
+        
     summary += boss_hint
 
     await query.edit_message_text(
