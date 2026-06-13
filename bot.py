@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("BOT_TOKEN", "")
 DATA_FILE = "data/users.json"
 SQUADS_FILE = "data/squads.json"
+BOSSES_FILE = "data/bosses.json"
 
 # ========== FLASK ==========
 flask_app = Flask('')
@@ -56,10 +57,49 @@ GEAR_UNLOCKS = {
 
 XP_TABLE = [0, 100, 200, 350, 500, 700, 950, 1250, 1600, 2000, 2500]
 
-def xp_needed(lvl):
-    if lvl < len(XP_TABLE):
-        return XP_TABLE[lvl]
-    return XP_TABLE[-1] + (lvl - len(XP_TABLE) + 1) * 600
+# Боссы: имя по фазам, слабый атрибут (задания этого типа бьют сильнее), награда
+BOSS_POOL = [
+    {
+        "phases": ["🐉 Дракон Лени", "🔥 Пылающий Дракон", "💀 Дракон Тьмы"],
+        "weak_attr": "wil",
+        "hp": 300,
+        "reward": "🐉 Клык Дракона",
+        "reward_desc": "Редкий аксессуар за победу над первым боссом",
+        "flavor": "Пожирает мотивацию. Слаб против Воли.",
+    },
+    {
+        "phases": ["👾 Туманный Великан", "⚡ Великан Бури", "🌑 Великан Хаоса"],
+        "weak_attr": "hp",
+        "hp": 400,
+        "reward": "🌿 Амулет здоровья",
+        "reward_desc": "Дают здоровье даже в самые тёмные дни",
+        "flavor": "Нарушает режим сна. Слаб против Здоровья.",
+    },
+    {
+        "phases": ["🍔 Король Фастфуда", "🌶️ Огненный Король", "☠️ Король Яда"],
+        "weak_attr": "hp",
+        "hp": 350,
+        "reward": "🥗 Щит Питания",
+        "reward_desc": "Защищает от соблазнов",
+        "flavor": "Отравляет привычки питания. Слаб против Здоровья.",
+    },
+    {
+        "phases": ["📱 Повелитель Экранов", "🌀 Вихрь Отвлечений", "🕳️ Чёрная Дыра"],
+        "weak_attr": "wil",
+        "hp": 380,
+        "reward": "🎯 Кольцо фокуса",
+        "reward_desc": "Помогает не отвлекаться",
+        "flavor": "Похищает время. Слаб против Воли.",
+    },
+    {
+        "phases": ["📚 Страж Невежества", "🌫️ Туман Забвения", "🧟 Пожиратель Знаний"],
+        "weak_attr": "int",
+        "hp": 420,
+        "reward": "📖 Tome мудреца",
+        "reward_desc": "Артефакт знаний",
+        "flavor": "Блокирует развитие. Слаб против Интеллекта.",
+    },
+]
 
 # ========== ДАННЫЕ ==========
 
@@ -87,6 +127,18 @@ def save_squads(squads):
     with open(SQUADS_FILE, "w", encoding="utf-8") as f:
         json.dump(squads, f, ensure_ascii=False, indent=2)
 
+def load_bosses():
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(BOSSES_FILE):
+        return {}
+    with open(BOSSES_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_bosses(bosses):
+    os.makedirs("data", exist_ok=True)
+    with open(BOSSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(bosses, f, ensure_ascii=False, indent=2)
+
 def new_user(name, cls_key):
     return {
         "name": name,
@@ -101,26 +153,24 @@ def new_user(name, cls_key):
         "squad_id": None,
     }
 
+def xp_needed(lvl):
+    if lvl < len(XP_TABLE):
+        return XP_TABLE[lvl]
+    return XP_TABLE[-1] + (lvl - len(XP_TABLE) + 1) * 600
+
 def update_streak(user):
-    """Обновляет стрик: +1 если вчера было выполнение, сбрасывает если пропуск"""
     today = str(date.today())
     yesterday = str(date.today() - timedelta(days=1))
     last = user.get("last_done_date", "")
     if last == today:
-        pass  # уже обновляли сегодня
+        return
     elif last == yesterday:
         user["streak"] = user.get("streak", 0) + 1
-    elif last != today:
-        if last:  # не первый день
-            user["streak"] = 1
-        else:
-            user["streak"] = 1
+    else:
+        user["streak"] = 1
     user["last_done_date"] = today
 
 def add_xp(user, amount):
-    """Добавляет опыт, возвращает True если был level up"""
-    cls_bonus = CLASSES[user["class"]]["bonus_attr"]
-    # Бонус 20% к атрибуту класса при получении опыта
     user["xp"] += amount
     leveled = False
     while user["xp"] >= xp_needed(user["level"]):
@@ -133,11 +183,94 @@ def add_xp(user, amount):
     return leveled
 
 def reset_daily_tasks(user):
-    """Сбрасывает выполнение заданий для нового дня"""
     today = str(date.today())
     for t in user.get("tasks", []):
         if t.get("done_date") != today:
             t["done"] = False
+
+# ========== БОСС ЛОГИКА ==========
+
+def get_or_create_boss(squad_id):
+    """Возвращает активного босса для отряда, создаёт нового если нет или неделя прошла."""
+    bosses = load_bosses()
+    today = str(date.today())
+
+    if squad_id in bosses:
+        boss = bosses[squad_id]
+        # Проверяем не истёк ли срок (7 дней)
+        created = boss.get("created", today)
+        days_alive = (date.today() - date.fromisoformat(created)).days
+        if days_alive < 7 and not boss.get("defeated"):
+            return boss, bosses
+
+    # Создаём нового босса
+    template = random.choice(BOSS_POOL)
+    boss = {
+        "phases": template["phases"],
+        "weak_attr": template["weak_attr"],
+        "hp_max": template["hp"],
+        "hp": template["hp"],
+        "reward": template["reward"],
+        "reward_desc": template["reward_desc"],
+        "flavor": template["flavor"],
+        "created": today,
+        "deadline": str(date.today() + timedelta(days=7)),
+        "defeated": False,
+        "damage_log": {},   # {uid: total_damage}
+        "last_hit_date": {},  # {uid: date} — для штрафа за пропуск
+    }
+    bosses[squad_id] = boss
+    save_bosses(bosses)
+    return boss, bosses
+
+def boss_phase(boss):
+    """Возвращает текущую фазу (0, 1, 2) и название."""
+    pct = boss["hp"] / boss["hp_max"]
+    if pct > 0.66:
+        return 0, boss["phases"][0]
+    elif pct > 0.33:
+        return 1, boss["phases"][1]
+    else:
+        return 2, boss["phases"][2]
+
+def boss_hp_bar(boss):
+    pct = boss["hp"] / boss["hp_max"]
+    filled = int(pct * 12)
+    return "❤️" * filled + "🖤" * (12 - filled)
+
+def calc_damage(task_attr, boss_weak_attr, user_attr_val):
+    """Урон = базовый + бонус если атрибут задания совпадает со слабостью босса."""
+    base = 8 + min(user_attr_val // 5, 12)  # 8-20 в зависимости от прокачки атрибута
+    if task_attr == boss_weak_attr:
+        base = int(base * 1.5)  # +50% к слабости
+    return base
+
+def boss_card(boss, squad_id, users_data, squad_members):
+    phase_idx, phase_name = boss_phase(boss)
+    hp_bar = boss_hp_bar(boss)
+    days_left = (date.fromisoformat(boss["deadline"]) - date.today()).days
+    weak_attr = ATTRS[boss["weak_attr"]]
+
+    # Топ дамагеров
+    dmg_log = boss.get("damage_log", {})
+    top = sorted(dmg_log.items(), key=lambda x: x[1], reverse=True)
+    top_text = ""
+    for mid, dmg in top[:3]:
+        m = users_data.get(mid)
+        if m:
+            top_text += f"  {CLASSES[m['class']]['emoji']} {m['name']}: {dmg} урона\n"
+
+    phase_stars = "⭐" * (phase_idx + 1)
+
+    return (
+        f"{phase_name} {phase_stars}\n\n"
+        f"{hp_bar}\n"
+        f"HP: {boss['hp']} / {boss['hp_max']}\n\n"
+        f"_{boss['flavor']}_\n\n"
+        f"⚡ Слабость: {weak_attr['emoji']} {weak_attr['name']} — удвоенный урон!\n"
+        f"⏳ До конца рейда: {max(0, days_left)} дн.\n\n"
+        f"*Урон отряда:*\n{top_text if top_text else '  пока нет урона'}"
+    )
 
 # ========== ОТОБРАЖЕНИЕ ==========
 
@@ -189,15 +322,27 @@ async def show_menu(target, uid, edit=False):
     done_today = len([t for t in user.get("tasks", []) if t.get("done_date") == today])
     total = len(user.get("tasks", []))
 
+    # Проверяем есть ли активный босс
+    squad_id = user.get("squad_id")
+    boss_line = ""
+    if squad_id:
+        boss, _ = get_or_create_boss(squad_id)
+        if not boss["defeated"]:
+            _, phase_name = boss_phase(boss)
+            pct = int(boss["hp"] / boss["hp_max"] * 100)
+            boss_line = f"\n⚔️ Рейд: {phase_name} — {pct}% HP"
+
     kb = [
         [InlineKeyboardButton("👤 Мой герой", callback_data="profile"),
          InlineKeyboardButton("📋 Задания", callback_data="tasks")],
         [InlineKeyboardButton("➕ Добавить задание", callback_data="add_task"),
          InlineKeyboardButton("🏰 Отряд", callback_data="squad")],
+        [InlineKeyboardButton("⚔️ Босс рейд", callback_data="boss")],
     ]
     text = (
         f"{cls['emoji']} *{user['name']}* · Ур. {user['level']} · 🔥 {user.get('streak',0)}\n"
         f"✅ Сегодня: {done_today}/{total} заданий"
+        f"{boss_line}"
     )
     markup = InlineKeyboardMarkup(kb)
     if edit:
@@ -211,7 +356,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     args = ctx.args
 
-    # Вступление в отряд по ссылке
     if args and args[0].startswith("squad_"):
         squad_id = args[0].replace("squad_", "")
         users = load_users()
@@ -262,7 +406,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     step = ctx.user_data.get("step")
 
-    # --- Имя героя ---
     if step == "name":
         if len(text) < 2 or len(text) > 20:
             await update.message.reply_text("Имя должно быть от 2 до 20 символов:")
@@ -278,7 +421,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Название отряда ---
     if step == "squad_name":
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
@@ -307,14 +449,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Название нового задания ---
     if ctx.user_data.get("awaiting_task_name"):
         if len(text) < 2:
             await update.message.reply_text("Название слишком короткое:")
             return
         ctx.user_data["temp_task_name"] = text
         ctx.user_data["awaiting_task_name"] = False
-
         kb = [[InlineKeyboardButton(f"{a['emoji']} {a['name']} — {a['hint']}", callback_data=f"tattr_{k}")]
               for k, a in ATTRS.items()]
         await update.message.reply_text(
@@ -330,11 +470,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = str(query.from_user.id)
     data = query.data
-
     users = load_users()
     user = users.get(uid)
 
-    # --- Меню ---
     if data == "menu":
         if uid in users:
             reset_daily_tasks(users[uid])
@@ -342,13 +480,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_menu(query, uid, edit=True)
         return
 
-    # --- Выбор класса ---
     if data.startswith("class_"):
         cls_key = data.replace("class_", "")
         name = ctx.user_data.get("temp_name", "Герой")
         users[uid] = new_user(name, cls_key)
-
-        # Если ждёт вступление в отряд
         pending = ctx.user_data.get("pending_squad")
         if pending:
             squads = load_squads()
@@ -358,7 +493,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     squads[pending]["members"].append(uid)
                 save_squads(squads)
             ctx.user_data["pending_squad"] = None
-
         save_users(users)
         cls = CLASSES[cls_key]
         ctx.user_data["step"] = "squad_name"
@@ -392,7 +526,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_tasks_menu(query, uid)
         return
 
-    # --- Добавить задание ---
     if data == "add_task":
         ctx.user_data["awaiting_task_name"] = True
         await query.edit_message_text(
@@ -401,7 +534,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Выбор атрибута задания ---
     if data.startswith("tattr_"):
         attr_key = data.replace("tattr_", "")
         task_name = ctx.user_data.get("temp_task_name", "Задание")
@@ -422,7 +554,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_tasks_menu(query, uid)
         return
 
-    # --- Выполнить задание ---
+    # --- Выполнить задание (с уроном боссу) ---
     if data.startswith("done_"):
         task_id = data.replace("done_", "")
         today = str(date.today())
@@ -443,10 +575,56 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user["attrs"][attr_key] = user["attrs"].get(attr_key, 0) + attr_gain
         update_streak(user)
         leveled = add_xp(user, xp)
+
+        # Урон боссу
+        boss_dmg = 0
+        boss_msg = ""
+        squad_id = user.get("squad_id")
+        if squad_id:
+            boss, bosses = get_or_create_boss(squad_id)
+            if not boss["defeated"]:
+                attr_val = user["attrs"].get(attr_key, 0)
+                dmg = calc_damage(attr_key, boss["weak_attr"], attr_val)
+                boss["hp"] = max(0, boss["hp"] - dmg)
+                boss_dmg = dmg
+
+                if uid not in boss["damage_log"]:
+                    boss["damage_log"][uid] = 0
+                boss["damage_log"][uid] += dmg
+                boss["last_hit_date"][uid] = today
+
+                _, phase_name = boss_phase(boss)
+
+                # Слабость
+                if attr_key == boss["weak_attr"]:
+                    boss_msg = f"\n⚡ *Критический удар!* {phase_name} получает {dmg} урона!"
+                else:
+                    boss_msg = f"\n⚔️ {phase_name} получает {dmg} урона!"
+
+                # Победа
+                if boss["hp"] <= 0:
+                    boss["defeated"] = True
+                    reward = boss["reward"]
+                    # Выдаём награду всем членам отряда
+                    squads = load_squads()
+                    squad = squads.get(squad_id, {})
+                    for mid in squad.get("members", []):
+                        m = users.get(mid)
+                        if m and reward not in m.get("gear", []):
+                            m["gear"].append(reward)
+                    boss_msg += f"\n\n🏆 *БОСС ПОВЕРЖЕН!*\nВесь отряд получает: {reward}"
+
+                save_bosses(bosses)
+
         save_users(users)
 
         attr = ATTRS[attr_key]
-        msg = f"✅ *{task['name']}*\n\n{attr['emoji']} {attr['name']} +{attr_gain} · ⭐ +{xp} опыта\n🔥 Стрик: {user['streak']} дн."
+        msg = (
+            f"✅ *{task['name']}*\n\n"
+            f"{attr['emoji']} {attr['name']} +{attr_gain} · ⭐ +{xp} опыта\n"
+            f"🔥 Стрик: {user['streak']} дн."
+            f"{boss_msg}"
+        )
         if leveled:
             gear = GEAR_UNLOCKS.get(user["level"], "")
             msg += f"\n\n🎉 *Уровень {user['level']}!*"
@@ -457,19 +635,74 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         return
 
-    # --- Удалить задание ---
-    if data.startswith("del_"):
-        task_id = data.replace("del_", "")
-        user["tasks"] = [t for t in user.get("tasks", []) if t["id"] != task_id]
-        save_users(users)
-        await show_tasks_menu(query, uid)
+    # --- Босс ---
+    if data == "boss":
+        squad_id = user.get("squad_id")
+        if not squad_id:
+            kb = [[InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
+            await query.edit_message_text(
+                "⚔️ Для рейда нужен отряд.\n\nСоздай его в разделе 🏰 Отряд.",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            return
+
+        boss, _ = get_or_create_boss(squad_id)
+        squads = load_squads()
+        squad = squads.get(squad_id, {})
+
+        if boss["defeated"]:
+            kb = [
+                [InlineKeyboardButton("🔄 Следующий босс", callback_data="boss_next")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu")],
+            ]
+            await query.edit_message_text(
+                f"🏆 *Босс повержён!*\n\n"
+                f"Награда: {boss['reward']}\n{boss['reward_desc']}\n\n"
+                f"Готов к следующему?",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode="Markdown"
+            )
+            return
+
+        card = boss_card(boss, squad_id, users, squad.get("members", []))
+        kb = [
+            [InlineKeyboardButton("📋 Выполнить задание", callback_data="tasks")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu")],
+        ]
+        await query.edit_message_text(
+            f"⚔️ *Рейд отряда*\n\n{card}",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
+    if data == "boss_next":
+        squad_id = user.get("squad_id")
+        if squad_id:
+            bosses = load_bosses()
+            if squad_id in bosses:
+                del bosses[squad_id]
+                save_bosses(bosses)
+            boss, _ = get_or_create_boss(squad_id)
+            _, phase_name = boss_phase(boss)
+            squads = load_squads()
+            squad = squads.get(squad_id, {})
+            card = boss_card(boss, squad_id, users, squad.get("members", []))
+            kb = [
+                [InlineKeyboardButton("📋 Выполнить задание", callback_data="tasks")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu")],
+            ]
+            await query.edit_message_text(
+                f"⚔️ *Новый рейд начался!*\n\n{card}",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode="Markdown"
+            )
         return
 
     # --- Отряд ---
     if data == "squad":
         squad_id = user.get("squad_id")
         squads = load_squads()
-
         if not squad_id or squad_id not in squads:
             kb = [
                 [InlineKeyboardButton("🏰 Создать отряд", callback_data="create_squad")],
@@ -495,7 +728,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         bot_me = await ctx.bot.get_me()
         link = f"https://t.me/{bot_me.username}?start=squad_{squad_id}"
-
         kb = [[InlineKeyboardButton("◀️ Назад", callback_data="menu")]]
         await query.edit_message_text(
             f"🏰 *{squad['name']}*\n\n{members_text}\n🔗 Ссылка:\n`{link}`",
@@ -504,12 +736,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Создать отряд ---
     if data == "create_squad":
         ctx.user_data["step"] = "squad_name"
-        await query.edit_message_text(
-            "🏰 Придумай название отряда и напиши его:",
-        )
+        await query.edit_message_text("🏰 Придумай название отряда и напиши его:")
         return
 
 async def show_tasks_menu(query, uid):
@@ -517,6 +746,15 @@ async def show_tasks_menu(query, uid):
     user = users.get(uid)
     today = str(date.today())
     tasks = user.get("tasks", [])
+
+    # Показываем слабость босса если есть активный рейд
+    boss_hint = ""
+    squad_id = user.get("squad_id")
+    if squad_id:
+        boss, _ = get_or_create_boss(squad_id)
+        if not boss["defeated"]:
+            weak = ATTRS[boss["weak_attr"]]
+            boss_hint = f"\n⚡ Слабость босса: {weak['emoji']} {weak['name']} — двойной урон!"
 
     if not tasks:
         kb = [
@@ -534,8 +772,14 @@ async def show_tasks_menu(query, uid):
         is_done = t.get("done_date") == today
         a = ATTRS[t["attr"]]
         status = "✅" if is_done else "◻️"
+        # Подсвечиваем задания с атрибутом слабости босса
+        boss_bonus = ""
+        if squad_id:
+            boss, _ = get_or_create_boss(squad_id)
+            if not boss["defeated"] and t["attr"] == boss["weak_attr"]:
+                boss_bonus = " ⚡"
         kb.append([InlineKeyboardButton(
-            f"{status} {t['name']} {a['emoji']}",
+            f"{status} {t['name']} {a['emoji']}{boss_bonus}",
             callback_data=f"done_{t['id']}"
         )])
 
@@ -544,7 +788,7 @@ async def show_tasks_menu(query, uid):
 
     done_today = len([t for t in tasks if t.get("done_date") == today])
     await query.edit_message_text(
-        f"📋 *Задания* — выполнено {done_today}/{len(tasks)}",
+        f"📋 *Задания* — выполнено {done_today}/{len(tasks)}{boss_hint}",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown"
     )
